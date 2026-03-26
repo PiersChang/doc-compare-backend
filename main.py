@@ -34,21 +34,59 @@ CREDIT_PACKAGES = [
 ]
 
 # ── 資料庫 ────────────────────────────────────────────
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
+    if DATABASE_URL and HAS_PG:
+        # Railway PostgreSQL
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+        conn.autocommit = False
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    else:
+        # 本地 SQLite
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
+
+def db_execute(conn, sql, params=()):
+    """統一 SQLite 和 PostgreSQL 的 ? 和 %s 差異"""
+    if DATABASE_URL and HAS_PG:
+        sql = sql.replace("?", "%s")
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    return cur
+
+def db_executescript(conn, script):
+    """只用於初始化，PostgreSQL 版本逐句執行"""
+    if DATABASE_URL and HAS_PG:
+        cur = conn.cursor()
+        for stmt in [s.strip() for s in script.split(";") if s.strip()]:
+            try:
+                cur.execute(stmt)
+            except Exception:
+                pass
+    else:
+        conn.executescript(script)
 
 def init_db():
     with get_db() as db:
-        db.executescript("""
+        is_pg = bool(DATABASE_URL and HAS_PG)
+        serial = "SERIAL" if is_pg else "INTEGER"
+        db_executescript(db, f"""
             CREATE TABLE IF NOT EXISTS users (
-                id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+                id                     {serial} PRIMARY KEY,
                 email                  TEXT    UNIQUE NOT NULL,
                 password               TEXT    NOT NULL,
                 plan                   TEXT    NOT NULL DEFAULT 'free',
@@ -60,25 +98,22 @@ def init_db():
                 created_at             TEXT    NOT NULL
             );
             CREATE TABLE IF NOT EXISTS usage_log (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                id         {serial} PRIMARY KEY,
                 user_id    INTEGER NOT NULL,
                 used_at    TEXT    NOT NULL,
-                source     TEXT    NOT NULL DEFAULT 'free',
-                FOREIGN KEY (user_id) REFERENCES users(id)
+                source     TEXT    NOT NULL DEFAULT 'free'
             );
             CREATE TABLE IF NOT EXISTS credit_orders (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id        INTEGER NOT NULL,
-                package_id     TEXT    NOT NULL,
-                credits        INTEGER NOT NULL,
-                amount         TEXT    NOT NULL,
+                id              {serial} PRIMARY KEY,
+                user_id         INTEGER NOT NULL,
+                package_id      TEXT    NOT NULL,
+                credits         INTEGER NOT NULL,
+                amount          TEXT    NOT NULL,
                 paypal_order_id TEXT,
-                status         TEXT    NOT NULL DEFAULT 'pending',
-                created_at     TEXT    NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id)
+                status          TEXT    NOT NULL DEFAULT 'pending',
+                created_at      TEXT    NOT NULL
             );
         """)
-        # 幫舊資料補欄位（若已存在會忽略）
         for col_sql in [
             "ALTER TABLE users ADD COLUMN credits INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE users ADD COLUMN referral_code TEXT",
@@ -86,7 +121,7 @@ def init_db():
             "ALTER TABLE usage_log ADD COLUMN source TEXT NOT NULL DEFAULT 'free'",
         ]:
             try:
-                db.execute(col_sql)
+                db_execute(db, col_sql)
             except Exception:
                 pass
 
@@ -115,7 +150,7 @@ def gen_referral_code() -> str:
 
 def get_monthly_usage(db, user_id: int) -> int:
     first_day = datetime.now().strftime("%Y-%m-01")
-    row = db.execute(
+    row = db_execute(db, 
         "SELECT COUNT(*) as cnt FROM usage_log WHERE user_id=? AND used_at>=? AND source='free'",
         (user_id, first_day)
     ).fetchone()
@@ -169,14 +204,14 @@ class AnalyzeRequest(BaseModel):
 @app.post("/auth/register")
 def register(req: RegisterRequest):
     with get_db() as db:
-        existing = db.execute("SELECT id FROM users WHERE email=?", (req.email,)).fetchone()
+        existing = db_execute(db, "SELECT id FROM users WHERE email=?", (req.email,)).fetchone()
         if existing:
             raise HTTPException(400, "此 Email 已被註冊")
 
         # 驗證邀請碼
         referrer_id = None
         if req.referral_code:
-            referrer = db.execute(
+            referrer = db_execute(db, 
                 "SELECT id FROM users WHERE referral_code=?", (req.referral_code.upper(),)
             ).fetchone()
             if not referrer:
@@ -186,26 +221,30 @@ def register(req: RegisterRequest):
         # 建立新用戶，附上邀請碼
         my_code = gen_referral_code()
         # 確保不重複
-        while db.execute("SELECT id FROM users WHERE referral_code=?", (my_code,)).fetchone():
+        while db_execute(db, "SELECT id FROM users WHERE referral_code=?", (my_code,)).fetchone():
             my_code = gen_referral_code()
 
-        db.execute(
+        cur = db_execute(db,
+            "INSERT INTO users (email, password, plan, credits, referral_code, referred_by, created_at) VALUES (?,?,?,?,?,?,?) RETURNING id" if (DATABASE_URL and HAS_PG) else
             "INSERT INTO users (email, password, plan, credits, referral_code, referred_by, created_at) VALUES (?,?,?,?,?,?,?)",
             (req.email, hash_password(req.password), "free", 0, my_code, referrer_id, datetime.now().isoformat())
         )
-        user_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        if DATABASE_URL and HAS_PG:
+            user_id = cur.fetchone()["id"]
+        else:
+            user_id = db_execute(db, "SELECT last_insert_rowid()").fetchone()[0]
 
         # 雙方各得 REFERRAL_BONUS 次點數
         if referrer_id:
-            db.execute("UPDATE users SET credits=credits+? WHERE id=?", (REFERRAL_BONUS, referrer_id))
-            db.execute("UPDATE users SET credits=credits+? WHERE id=?", (REFERRAL_BONUS, user_id))
+            db_execute(db, "UPDATE users SET credits=credits+? WHERE id=?", (REFERRAL_BONUS, referrer_id))
+            db_execute(db, "UPDATE users SET credits=credits+? WHERE id=?", (REFERRAL_BONUS, user_id))
 
     return {"token": make_token(user_id, req.email), "plan": "free"}
 
 @app.post("/auth/login")
 def login(req: LoginRequest):
     with get_db() as db:
-        user = db.execute(
+        user = db_execute(db, 
             "SELECT id, plan FROM users WHERE email=? AND password=?",
             (req.email, hash_password(req.password))
         ).fetchone()
@@ -216,7 +255,7 @@ def login(req: LoginRequest):
 @app.get("/auth/me")
 def me(current_user: dict = Depends(verify_token)):
     with get_db() as db:
-        user = db.execute(
+        user = db_execute(db, 
             "SELECT plan, credits, referral_code FROM users WHERE id=?", (current_user["id"],)
         ).fetchone()
         usage = get_monthly_usage(db, current_user["id"])
@@ -261,7 +300,7 @@ async def create_credit_order(request: Request, current_user: dict = Depends(ver
 
     order_id = resp.json()["id"]
     with get_db() as db:
-        db.execute(
+        db_execute(db, 
             "INSERT INTO credit_orders (user_id, package_id, credits, amount, paypal_order_id, status, created_at) VALUES (?,?,?,?,?,?,?)",
             (current_user["id"], package_id, package["credits"], package["price"], order_id, "pending", datetime.now().isoformat())
         )
@@ -275,7 +314,7 @@ async def capture_credit_order(request: Request, current_user: dict = Depends(ve
         raise HTTPException(400, "缺少 order_id")
 
     with get_db() as db:
-        order = db.execute(
+        order = db_execute(db, 
             "SELECT * FROM credit_orders WHERE paypal_order_id=? AND user_id=? AND status='pending'",
             (order_id, current_user["id"])
         ).fetchone()
@@ -288,10 +327,10 @@ async def capture_credit_order(request: Request, current_user: dict = Depends(ve
             raise HTTPException(402, f"付款未完成：{result.get('status')}")
 
         # 加點數
-        db.execute("UPDATE credit_orders SET status='completed' WHERE paypal_order_id=?", (order_id,))
-        db.execute("UPDATE users SET credits=credits+? WHERE id=?", (order["credits"], current_user["id"]))
+        db_execute(db, "UPDATE credit_orders SET status='completed' WHERE paypal_order_id=?", (order_id,))
+        db_execute(db, "UPDATE users SET credits=credits+? WHERE id=?", (order["credits"], current_user["id"]))
 
-        new_credits = db.execute("SELECT credits FROM users WHERE id=?", (current_user["id"],)).fetchone()["credits"]
+        new_credits = db_execute(db, "SELECT credits FROM users WHERE id=?", (current_user["id"],)).fetchone()["credits"]
 
     return {"success": True, "credits_added": order["credits"], "total_credits": new_credits}
 
@@ -299,8 +338,8 @@ async def capture_credit_order(request: Request, current_user: dict = Depends(ve
 @app.get("/referral/stats")
 def referral_stats(current_user: dict = Depends(verify_token)):
     with get_db() as db:
-        user = db.execute("SELECT referral_code FROM users WHERE id=?", (current_user["id"],)).fetchone()
-        count = db.execute(
+        user = db_execute(db, "SELECT referral_code FROM users WHERE id=?", (current_user["id"],)).fetchone()
+        count = db_execute(db, 
             "SELECT COUNT(*) as cnt FROM users WHERE referred_by=?", (current_user["id"],)
         ).fetchone()["cnt"]
     return {
@@ -315,6 +354,44 @@ def referral_stats(current_user: dict = Depends(verify_token)):
 def get_plan_info():
     return {"client_id": PAYPAL_CLIENT_ID, "plan_id": PAYPAL_PLAN_ID, "mode": PAYPAL_MODE}
 
+@app.post("/paypal/create-subscription-url")
+async def create_subscription_url(current_user: dict = Depends(verify_token)):
+    """後端建立訂閱連結，前端直接跳轉，不需要 SDK"""
+    token = await get_paypal_token()
+    return_url = f"{FRONTEND_URL}?subscription_id={{subscriptionId}}"
+    cancel_url = f"{FRONTEND_URL}?paypal_cancelled=1"
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{PAYPAL_BASE}/v1/billing/subscriptions",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={
+                "plan_id": PAYPAL_PLAN_ID,
+                "application_context": {
+                    "brand_name":          "文件比對工具",
+                    "locale":              "zh-TW",
+                    "shipping_preference": "NO_SHIPPING",
+                    "user_action":         "SUBSCRIBE_NOW",
+                    "return_url":          return_url,
+                    "cancel_url":          cancel_url
+                }
+            }
+        )
+
+    if resp.status_code not in (200, 201):
+        raise HTTPException(502, f"建立訂閱失敗：{resp.text}")
+
+    data = resp.json()
+    # 找到 approve 連結
+    approve_url = next(
+        (link["href"] for link in data.get("links", []) if link["rel"] == "approve"),
+        None
+    )
+    if not approve_url:
+        raise HTTPException(502, "找不到 PayPal 訂閱連結")
+
+    return {"approve_url": approve_url, "subscription_id": data["id"]}
+
 @app.post("/paypal/activate")
 async def activate_subscription(request: Request, current_user: dict = Depends(verify_token)):
     body = await request.json()
@@ -326,7 +403,7 @@ async def activate_subscription(request: Request, current_user: dict = Depends(v
     if status not in ("ACTIVE", "APPROVED"):
         raise HTTPException(400, f"訂閱狀態異常：{status}")
     with get_db() as db:
-        db.execute(
+        db_execute(db, 
             "UPDATE users SET plan=?, paypal_subscription_id=? WHERE id=?",
             ("pro", subscription_id, current_user["id"])
         )
@@ -340,19 +417,19 @@ async def paypal_webhook(request: Request):
         sid = body.get("resource", {}).get("id")
         if sid:
             with get_db() as db:
-                db.execute("UPDATE users SET plan='free', paypal_subscription_id=NULL WHERE paypal_subscription_id=?", (sid,))
+                db_execute(db, "UPDATE users SET plan='free', paypal_subscription_id=NULL WHERE paypal_subscription_id=?", (sid,))
     elif event_type == "BILLING.SUBSCRIPTION.PAYMENT.FAILED":
         sid = body.get("resource", {}).get("id")
         if sid:
             with get_db() as db:
-                db.execute("UPDATE users SET plan='free' WHERE paypal_subscription_id=?", (sid,))
+                db_execute(db, "UPDATE users SET plan='free' WHERE paypal_subscription_id=?", (sid,))
     return {"received": True}
 
 # ── 路由：分析 ────────────────────────────────────────
 @app.post("/analyze")
 async def analyze(req: AnalyzeRequest, current_user: dict = Depends(verify_token)):
     with get_db() as db:
-        user = db.execute("SELECT plan, credits FROM users WHERE id=?", (current_user["id"],)).fetchone()
+        user = db_execute(db, "SELECT plan, credits FROM users WHERE id=?", (current_user["id"],)).fetchone()
 
         # 決定使用哪個額度
         if user["plan"] == "pro":
@@ -414,8 +491,8 @@ async def analyze(req: AnalyzeRequest, current_user: dict = Depends(verify_token
 
         # 扣額度
         if source == "credits":
-            db.execute("UPDATE users SET credits=credits-1 WHERE id=?", (current_user["id"],))
-        db.execute("INSERT INTO usage_log (user_id, used_at, source) VALUES (?,?,?)",
+            db_execute(db, "UPDATE users SET credits=credits-1 WHERE id=?", (current_user["id"],))
+        db_execute(db, "INSERT INTO usage_log (user_id, used_at, source) VALUES (?,?,?)",
                    (current_user["id"], datetime.now().isoformat(), source))
 
         result["locked"]       = False
