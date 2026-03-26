@@ -227,11 +227,11 @@
 </div>
 <script>
 // ── 設定 ──────────────────────────────────────────────
-const API_BASE = "http://localhost:8000";  // 本地開發；上線後換成你的域名
+const API_BASE = "https://doc-compare-backend-production.up.railway.app";
 
 // ── PayPal 前端設定（在這裡直接填，Client ID 是公開資訊）──
-const PAYPAL_CLIENT_ID = "";   // ← 把你的 PayPal Client ID 貼在這裡
-const PAYPAL_PLAN_ID   = "";   // ← 把你的 PayPal Plan ID 貼在這裡
+const PAYPAL_CLIENT_ID = "AXLM2-Ag1uNjeHsrbNVsfNcjRlQrb0ud6RPwCbgncKt245tx8gMQJGyLnHFZjvhf2CQAUVqdCiKHGmp2";   // ← 把你的 PayPal Client ID 貼在這裡
+const PAYPAL_PLAN_ID   = "P-2JP67624BX9194340NHCNDQA";   // ← 把你的 PayPal Plan ID 貼在這裡
 
 // ── 狀態 ──────────────────────────────────────────────
 let token = localStorage.getItem("token");
