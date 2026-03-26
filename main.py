@@ -274,6 +274,58 @@ def me(current_user: dict = Depends(verify_token)):
 def list_packages():
     return CREDIT_PACKAGES
 
+@app.post("/credits/create-order-url")
+async def create_credit_order_url(request: Request, current_user: dict = Depends(verify_token)):
+    """建立點數包訂單並回傳 PayPal 跳轉連結（不需要 SDK）"""
+    body       = await request.json()
+    package_id = body.get("package_id")
+    package    = next((p for p in CREDIT_PACKAGES if p["id"] == package_id), None)
+    if not package:
+        raise HTTPException(400, "無效的點數包")
+
+    token = await get_paypal_token()
+    return_url = f"{FRONTEND_URL}?credits_package={package_id}"
+    cancel_url = f"{FRONTEND_URL}?paypal_cancelled=1"
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{PAYPAL_BASE}/v2/checkout/orders",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={
+                "intent": "CAPTURE",
+                "purchase_units": [{
+                    "amount": {"currency_code": "USD", "value": package["price"]},
+                    "description": f"文件比對工具 {package['label']} 點數包"
+                }],
+                "application_context": {
+                    "return_url": return_url,
+                    "cancel_url": cancel_url,
+                    "brand_name": "文件比對工具",
+                    "user_action": "PAY_NOW"
+                }
+            }
+        )
+
+    if resp.status_code not in (200, 201):
+        raise HTTPException(502, f"建立 PayPal 訂單失敗：{resp.text}")
+
+    data = resp.json()
+    order_id    = data["id"]
+    approve_url = next(
+        (link["href"] for link in data.get("links", []) if link["rel"] == "approve"),
+        None
+    )
+    if not approve_url:
+        raise HTTPException(502, "找不到 PayPal 付款連結")
+
+    with get_db() as db:
+        db_execute(db,
+            "INSERT INTO credit_orders (user_id, package_id, credits, amount, paypal_order_id, status, created_at) VALUES (?,?,?,?,?,?,?)",
+            (current_user["id"], package_id, package["credits"], package["price"], order_id, "pending", datetime.now().isoformat())
+        )
+
+    return {"order_id": order_id, "approve_url": approve_url, "package": package}
+
 @app.post("/credits/create-order")
 async def create_credit_order(request: Request, current_user: dict = Depends(verify_token)):
     body       = await request.json()
@@ -358,7 +410,7 @@ def get_plan_info():
 async def create_subscription_url(current_user: dict = Depends(verify_token)):
     """後端建立訂閱連結，前端直接跳轉，不需要 SDK"""
     token = await get_paypal_token()
-    return_url = f"{FRONTEND_URL}?subscription_id={{subscriptionId}}"
+    return_url = f"{FRONTEND_URL}?paypal_return=subscription"
     cancel_url = f"{FRONTEND_URL}?paypal_cancelled=1"
 
     async with httpx.AsyncClient() as client:
