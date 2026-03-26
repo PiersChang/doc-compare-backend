@@ -1,0 +1,1010 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>文件比對工具</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f4f0; color: #1a1a1a; min-height: 100vh; padding: 2rem 1rem; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+
+  .header { margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; }
+  .header h1 { font-size: 24px; font-weight: 600; margin-bottom: 4px; }
+  .header p { font-size: 14px; color: #666; }
+  .user-info { font-size: 13px; color: #555; background: #fff; border: 1px solid #e0deda; border-radius: 8px; padding: 8px 14px; display: flex; align-items: center; gap: 12px; }
+  .user-info .plan-badge { background: #eaf3de; color: #2d6a0a; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; }
+  .user-info .plan-badge.pro { background: #e6f1fb; color: #0c447c; }
+  .logout-btn { font-size: 12px; color: #999; cursor: pointer; background: none; border: none; }
+  .upgrade-header-btn { font-size: 12px; font-weight: 600; color: #185fa5; background: #e6f1fb; border: 1px solid #b5d4f4; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  .upgrade-header-btn:hover { background: #b5d4f4; }
+  .logout-btn:hover { color: #333; }
+
+  /* Auth forms */
+  .auth-wrap { max-width: 400px; margin: 4rem auto; }
+  .auth-card { background: #fff; border: 1px solid #e0deda; border-radius: 14px; padding: 2rem; }
+  .auth-card h2 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+  .auth-card p { font-size: 14px; color: #666; margin-bottom: 1.5rem; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 12px; font-weight: 600; color: #555; margin-bottom: 5px; text-transform: uppercase; letter-spacing: .04em; }
+  .field input { width: 100%; padding: 9px 12px; font-size: 14px; border: 1px solid #ddd; border-radius: 8px; background: #fff; color: #1a1a1a; }
+  .field input:focus { outline: none; border-color: #aaa; }
+  .auth-btn { width: 100%; padding: 11px; font-size: 14px; font-weight: 600; background: #1a1a1a; color: #fff; border: none; border-radius: 8px; cursor: pointer; margin-top: 6px; }
+  .auth-btn:hover { background: #333; }
+  .auth-switch { text-align: center; margin-top: 14px; font-size: 13px; color: #666; }
+  .auth-switch a { color: #1a1a1a; cursor: pointer; font-weight: 500; }
+
+  /* Main app */
+  .input-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+  .doc-box label { display: block; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #888; margin-bottom: 6px; }
+  textarea { width: 100%; height: 200px; padding: 12px; font-size: 13px; line-height: 1.65; border: 1px solid #ddd; border-radius: 10px; background: #fff; color: #1a1a1a; resize: vertical; font-family: inherit; }
+  textarea:focus { outline: none; border-color: #aaa; }
+
+  .btn-row { display: flex; gap: 8px; margin-bottom: 1rem; flex-wrap: wrap; align-items: center; }
+  .btn-primary { padding: 10px 24px; font-size: 14px; font-weight: 600; background: #1a1a1a; color: #fff; border: none; border-radius: 8px; cursor: pointer; }
+  .btn-primary:hover { background: #333; }
+  .btn-primary:disabled { background: #aaa; cursor: not-allowed; }
+  .btn-sec { padding: 10px 16px; font-size: 13px; background: #fff; border: 1px solid #ddd; border-radius: 8px; cursor: pointer; color: #444; }
+  .btn-sec:hover { background: #f0eeea; }
+  .usage-note { font-size: 13px; color: #888; margin-left: auto; }
+  .usage-note span { color: #c0392b; font-weight: 600; }
+
+  /* Results */
+  .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 1rem; }
+  .metric { background: #fff; border: 1px solid #e8e6e0; border-radius: 10px; padding: 14px 16px; }
+  .metric-val { font-size: 26px; font-weight: 600; }
+  .metric-lbl { font-size: 12px; color: #888; margin-top: 2px; }
+  .result-card { background: #fff; border: 1px solid #e8e6e0; border-radius: 12px; padding: 1.25rem 1.5rem; }
+  .risk-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  .risk-badge { padding: 4px 14px; border-radius: 99px; font-size: 13px; font-weight: 600; }
+  .risk-low  { background: #eaf3de; color: #2d6a0a; }
+  .risk-mid  { background: #faeeda; color: #7a4a08; }
+  .risk-high { background: #fcebeb; color: #9a2222; }
+  .summary-text { font-size: 13px; color: #666; }
+  .divider { border: none; border-top: 1px solid #f0eeea; margin: 12px 0; }
+  .diff-item { margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid #f0eeea; }
+  .diff-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+  .diff-header { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+  .tag { display: inline-block; font-size: 11px; padding: 2px 9px; border-radius: 99px; font-weight: 600; }
+  .tag-add    { background: #eaf3de; color: #2d6a0a; }
+  .tag-remove { background: #fcebeb; color: #9a2222; }
+  .tag-change { background: #faeeda; color: #7a4a08; }
+  .diff-title { font-size: 13px; font-weight: 600; }
+  .diff-desc { font-size: 13px; color: #444; line-height: 1.65; }
+  .risk-note { display: inline-block; font-size: 12px; color: #7a4a08; background: #faeeda; padding: 3px 10px; border-radius: 6px; margin-top: 5px; }
+
+  .status { font-size: 13px; color: #888; margin-bottom: 1rem; min-height: 20px; }
+  .status.err { color: #c0392b; }
+  .status.ok  { color: #27ae60; }
+  #results { display: none; }
+
+  /* Upgrade banner */
+  .upgrade-banner { background: #e6f1fb; border: 1px solid #b5d4f4; border-radius: 10px; padding: 14px 18px; margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .upgrade-banner p { font-size: 13px; color: #0c447c; }
+  .upgrade-btn { font-size: 13px; font-weight: 600; background: #185fa5; color: #fff; border: none; border-radius: 7px; padding: 7px 16px; cursor: pointer; white-space: nowrap; }
+
+  /* 檔案上傳 */
+  .upload-area { border: 2px dashed #ddd; border-radius: 10px; padding: 14px 12px; text-align: center; cursor: pointer; transition: all .15s; background: #fafaf8; margin-bottom: 8px; }
+  .upload-area:hover, .upload-area.drag-over { border-color: #185fa5; background: #f0f7ff; }
+  .upload-area.has-file { border-color: #2d6a0a; background: #f4fbee; border-style: solid; }
+  .upload-area p { font-size: 12px; color: #999; margin-top: 4px; }
+  .file-name { font-size: 12px; font-weight: 600; color: #2d6a0a; margin-top: 4px; }
+  .clear-file { font-size: 11px; color: #c0392b; cursor: pointer; margin-left: 6px; }
+
+  @media (max-width: 600px) {
+    .input-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Auth Screen -->
+  <div id="authScreen" class="auth-wrap">
+    <!-- Login Form -->
+    <div id="loginForm" class="auth-card">
+      <h2>📄 文件比對工具</h2>
+      <p>登入後即可開始使用</p>
+      <div class="field"><label>Email</label><input type="email" id="loginEmail" placeholder="you@example.com"/></div>
+      <div class="field"><label>密碼</label><input type="password" id="loginPassword" placeholder="••••••••"/></div>
+      <div id="loginError" class="status err" style="min-height:0"></div>
+      <button class="auth-btn" onclick="doLogin()">登入</button>
+      <div class="auth-switch">還沒有帳號？<a onclick="showRegister()">免費註冊</a></div>
+    </div>
+    <!-- Register Form -->
+    <div id="registerForm" class="auth-card" style="display:none">
+      <h2>免費註冊</h2>
+      <p>每月免費 3 次比對</p>
+      <div class="field"><label>Email</label><input type="email" id="regEmail" placeholder="you@example.com"/></div>
+      <div class="field"><label>密碼</label><input type="password" id="regPassword" placeholder="至少 6 個字元"/></div>
+      <div class="field"><label>邀請碼（選填）</label><input type="text" id="regReferral" placeholder="填入好友的邀請碼，雙方各得 3 次點數" style="text-transform:uppercase;"/></div>
+      <div id="regError" class="status err" style="min-height:0"></div>
+      <button class="auth-btn" onclick="doRegister()">建立帳號</button>
+      <div class="auth-switch">已有帳號？<a onclick="showLogin()">登入</a></div>
+    </div>
+  </div>
+
+  <!-- Main App -->
+  <div id="appScreen" style="display:none">
+    <div class="header">
+      <div>
+        <h1>📄 文件比對工具</h1>
+        <p>貼入兩個版本的文件，AI 自動分析差異並標出風險點</p>
+      </div>
+      <div class="user-info">
+        <span id="userEmail"></span>
+        <span id="planBadge" class="plan-badge">免費</span>
+        <span id="usageText" style="color:#888"></span>
+        <span id="creditsText" style="color:#854F0B;font-size:12px;"></span>
+        <button class="upgrade-header-btn" id="upgradeHeaderBtn" onclick="startUpgrade()" style="display:none">⚡ 升級無限版</button>
+        <button class="logout-btn" onclick="logout()">登出</button>
+      </div>
+    </div>
+
+    <div id="upgradeBanner" class="upgrade-banner" style="display:none">
+      <div>
+        <p id="upgradeBannerMsg" style="font-weight:600;margin-bottom:2px;">升級付費方案，無限次使用</p>
+        <p style="font-size:12px;opacity:.85;">免費版每月 3 次・付費版 USD $6/月 無限次・隨時可取消</p>
+      </div>
+      <button class="upgrade-btn" id="upgradeBtn" onclick="startUpgrade()">立即升級 →</button>
+    </div>
+
+    <!-- 點數包 -->
+    <div id="creditsPanel" class="upgrade-banner" style="display:none; flex-direction:column; gap:12px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <div>
+          <p style="font-weight:600; font-size:14px; margin-bottom:2px;">購買點數包</p>
+          <p style="font-size:12px; opacity:.85;">點數不過期，用完再買・免費次數用完後自動扣點</p>
+        </div>
+        <button onclick="document.getElementById('creditsPanel').style.display='none'" style="background:none;border:none;font-size:18px;cursor:pointer;color:#888;">✕</button>
+      </div>
+      <div id="packageList" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px;"></div>
+    </div>
+
+    <!-- 邀請好友 -->
+    <div id="referralPanel" style="display:none; background:#eaf3de; border:1px solid #c0dd97; border-radius:10px; padding:14px 18px; margin-bottom:1rem;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <p style="font-weight:600; font-size:14px; color:#2d6a0a;">邀請好友・雙方各得 3 次點數</p>
+        <button onclick="document.getElementById('referralPanel').style.display='none'" style="background:none;border:none;font-size:18px;cursor:pointer;color:#888;">✕</button>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <input id="referralLink" type="text" readonly style="flex:1; padding:8px 10px; font-size:13px; border:1px solid #c0dd97; border-radius:7px; background:#fff; color:#333; min-width:200px;">
+        <button onclick="copyReferral()" style="padding:8px 16px; font-size:13px; font-weight:600; background:#2d6a0a; color:#fff; border:none; border-radius:7px; cursor:pointer; white-space:nowrap;">複製連結</button>
+      </div>
+      <p id="referralStats" style="font-size:12px; color:#3B6D11; margin-top:8px;"></p>
+    </div>
+
+    <div class="input-grid">
+      <div class="doc-box">
+        <label>版本 A（舊版）</label>
+        <div class="upload-area" id="uploadA" onclick="document.getElementById('fileA').click()"
+             ondragover="handleDragOver(event,'A')" ondragleave="handleDragLeave('A')" ondrop="handleDrop(event,'A')">
+          <div style="font-size:22px;">📄</div>
+          <div style="font-size:13px;color:#555;font-weight:500;">點擊上傳或拖曳檔案</div>
+          <p>PDF、Word (.docx)、TXT・最大 10MB</p>
+          <div class="file-name" id="fileNameA" style="display:none;"></div>
+        </div>
+        <input type="file" id="fileA" accept=".pdf,.docx,.txt" style="display:none" onchange="handleFileSelect(event,'A')">
+        <textarea id="docA" placeholder="或直接貼入文字內容..." style="height:140px;"></textarea>
+      </div>
+      <div class="doc-box">
+        <label>版本 B（新版）</label>
+        <div class="upload-area" id="uploadB" onclick="document.getElementById('fileB').click()"
+             ondragover="handleDragOver(event,'B')" ondragleave="handleDragLeave('B')" ondrop="handleDrop(event,'B')">
+          <div style="font-size:22px;">📄</div>
+          <div style="font-size:13px;color:#555;font-weight:500;">點擊上傳或拖曳檔案</div>
+          <p>PDF、Word (.docx)、TXT・最大 10MB</p>
+          <div class="file-name" id="fileNameB" style="display:none;"></div>
+        </div>
+        <input type="file" id="fileB" accept=".pdf,.docx,.txt" style="display:none" onchange="handleFileSelect(event,'B')">
+        <textarea id="docB" placeholder="或直接貼入文字內容..." style="height:140px;"></textarea>
+      </div>
+    </div>
+
+    <div style="font-size:12px; color:#aaa; margin-bottom:10px; display:flex; align-items:center; gap:6px;">
+      🔒 文件內容僅用於本次分析，不會被儲存或用於訓練 AI 模型。
+      <a onclick="showPrivacyModal()" style="color:#888; text-decoration:underline; cursor:pointer;">了解更多</a>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn-primary" id="analyzeBtn" onclick="analyze()">開始比對分析</button>
+      <button class="btn-sec" id="reportBtn" onclick="generateReport()" style="display:none;">📋 產出報告</button>
+      <button class="btn-sec" onclick="loadExample()">載入範例</button>
+      <button class="btn-sec" onclick="clearAll()">清除</button>
+      <span class="usage-note" id="usageNote"></span>
+      <button class="btn-sec" id="buyCreditsBtn" onclick="toggleCreditsPanel()" style="display:none; font-size:12px; padding:7px 12px;">買點數</button>
+      <button class="btn-sec" id="referralBtn" onclick="toggleReferralPanel()" style="display:none; font-size:12px; padding:7px 12px; color:#2d6a0a;">邀請好友 🎁</button>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <div id="results">
+      <div class="metrics" id="metricsRow"></div>
+      <div class="result-card" id="resultCard"></div>
+    </div>
+  </div>
+
+</div>
+<script>
+// ── 設定 ──────────────────────────────────────────────
+const API_BASE = "http://localhost:8000";  // 本地開發；上線後換成你的域名
+
+// ── PayPal 前端設定（在這裡直接填，Client ID 是公開資訊）──
+const PAYPAL_CLIENT_ID = "";   // ← 把你的 PayPal Client ID 貼在這裡
+const PAYPAL_PLAN_ID   = "";   // ← 把你的 PayPal Plan ID 貼在這裡
+
+// ── 狀態 ──────────────────────────────────────────────
+let token = localStorage.getItem("token");
+let userInfo = null;
+let lastResult = null;
+let lastDocA = "";
+let lastDocB = "";
+
+// ── 初始化 ────────────────────────────────────────────
+window.onload = async () => {
+  // 自動填入邀請碼
+  const urlRef = new URLSearchParams(window.location.search).get('ref');
+  if (urlRef) {
+    const refInput = document.getElementById('regReferral');
+    if (refInput) refInput.value = urlRef.toUpperCase();
+    showRegister();
+  }
+  if (token) {
+    try { await loadUserInfo(); showApp(); }
+    catch { logout(); }
+  }
+};
+
+async function loadPaypalSDK(clientId) {
+  return new Promise((resolve, reject) => {
+    if (window.paypal) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = `https://www.paypal.com/sdk/js?client-id=${clientId}&vault=true&intent=subscription&currency=USD`;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('PayPal SDK 載入失敗，請確認網路連線'));
+    const timer = setTimeout(() => reject(new Error('PayPal SDK 載入逾時')), 10000);
+    s.onload = () => { clearTimeout(timer); resolve(); };
+    document.head.appendChild(s);
+  });
+}
+
+// ── Auth ──────────────────────────────────────────────
+function showLogin()    { document.getElementById('loginForm').style.display=''; document.getElementById('registerForm').style.display='none'; }
+function showRegister() { document.getElementById('loginForm').style.display='none'; document.getElementById('registerForm').style.display=''; }
+
+async function doLogin() {
+  const email = document.getElementById('loginEmail').value.trim();
+  const pw    = document.getElementById('loginPassword').value;
+  document.getElementById('loginError').textContent = '';
+  try {
+    const res = await api('/auth/login', { email, password: pw });
+    token = res.token;
+    localStorage.setItem('token', token);
+    await loadUserInfo();
+    showApp();
+  } catch(e) { document.getElementById('loginError').textContent = e.message; }
+}
+
+async function doRegister() {
+  const email = document.getElementById('regEmail').value.trim();
+  const pw    = document.getElementById('regPassword').value;
+  document.getElementById('regError').textContent = '';
+  if (pw.length < 6) { document.getElementById('regError').textContent = '密碼至少 6 個字元'; return; }
+  const referral = document.getElementById('regReferral').value.trim().toUpperCase();
+  try {
+    const res = await api('/auth/register', { email, password: pw, referral_code: referral });
+    token = res.token;
+    localStorage.setItem('token', token);
+    await loadUserInfo();
+    showApp();
+  } catch(e) { document.getElementById('regError').textContent = e.message; }
+}
+
+function logout() {
+  token = null;
+  localStorage.removeItem('token');
+  document.getElementById('appScreen').style.display = 'none';
+  document.getElementById('authScreen').style.display = '';
+  showLogin();
+}
+
+// ── 載入用戶資訊 ──────────────────────────────────────
+async function loadUserInfo() {
+  userInfo = await api('/auth/me', null, 'GET');
+}
+
+function showApp() {
+  document.getElementById('authScreen').style.display = 'none';
+  document.getElementById('appScreen').style.display  = '';
+  updateUserUI();
+}
+
+function updateUserUI() {
+  if (!userInfo) return;
+  document.getElementById('userEmail').textContent = userInfo.email;
+  const badge = document.getElementById('planBadge');
+  badge.textContent = userInfo.plan === 'pro' ? '付費版' : '免費版';
+  badge.className   = 'plan-badge' + (userInfo.plan === 'pro' ? ' pro' : '');
+
+  // 點數顯示
+  const creditsText = document.getElementById('creditsText');
+  creditsText.textContent = userInfo.credits > 0 ? `點數 ${userInfo.credits}` : '';
+
+  // 買點數 / 邀請好友按鈕（免費版才顯示）
+  document.getElementById('buyCreditsBtn').style.display  = userInfo.plan === 'free' ? '' : 'none';
+  document.getElementById('referralBtn').style.display    = userInfo.plan !== 'pro' ? '' : 'none';
+
+  if (userInfo.plan === 'free') {
+    document.getElementById('usageText').textContent = `本月 ${userInfo.usage}/${userInfo.free_limit} 次`;
+    document.getElementById('usageNote').innerHTML   = `本月剩餘 <span>${userInfo.remaining}</span> 次`;
+    const banner = document.getElementById('upgradeBanner');
+    const msg    = document.getElementById('upgradeBannerMsg');
+    const btn    = document.getElementById('upgradeHeaderBtn');
+    banner.style.display = '';
+    btn.style.display    = '';
+    if (userInfo.remaining === 0 && userInfo.credits === 0) {
+      banner.style.background  = '#fcebeb';
+      banner.style.borderColor = '#f7c1c1';
+      msg.textContent = '免費額度與點數已用完！購買點數或升級付費版';
+    } else {
+      banner.style.background  = '#e6f1fb';
+      banner.style.borderColor = '#b5d4f4';
+      msg.textContent = `還剩 ${userInfo.remaining} 次免費額度${userInfo.credits > 0 ? ` + ${userInfo.credits} 點數` : ''}・升級享無限次使用`;
+    }
+  } else {
+    document.getElementById('usageText').textContent = '';
+    document.getElementById('usageNote').textContent = '';
+    document.getElementById('upgradeBanner').style.display = 'none';
+    document.getElementById('upgradeHeaderBtn').style.display = 'none';
+  }
+}
+
+// ── 比對分析 ──────────────────────────────────────────
+function loadExample() {
+  document.getElementById('docA').value = `服務合約（第 1.2 版）\n\n第一條：服務範圍\n乙方同意提供軟體開發服務，包含需求分析、系統設計及程式開發。\n\n第二條：付款條件\n甲方應於每月月底前支付服務費用新台幣 50,000 元整。逾期付款不收取違約金。\n\n第三條：保密義務\n雙方對本合約內容負有保密義務，期限為合約終止後一年。\n\n第四條：合約期限\n本合約自簽訂日起生效，有效期限為一年，期滿自動終止。`;
+  document.getElementById('docB').value = `服務合約（第 2.0 版）\n\n第一條：服務範圍\n乙方同意提供軟體開發及維護服務，包含需求分析、系統設計、程式開發及上線後三個月技術支援。\n\n第二條：付款條件\n甲方應於每月月底前支付服務費用新台幣 65,000 元整。逾期付款每日加收千分之三違約金。\n\n第三條：保密義務\n雙方對本合約內容及相關技術資料負有保密義務，期限為合約終止後三年。\n\n第四條：合約期限\n本合約自簽訂日起生效，有效期限為兩年，期滿前三十日若未收到終止通知則自動續約一年。\n\n第五條：智慧財產權\n乙方開發之所有程式碼及文件，著作權歸甲方所有。`;
+  setStatus('範例已載入', 'ok');
+}
+
+function clearAll() {
+  document.getElementById('docA').value = '';
+  document.getElementById('docB').value = '';
+  document.getElementById('results').style.display = 'none';
+  setStatus('');
+  ['A','B'].forEach(side => {
+    document.getElementById('fileNameA'.replace('A', side)).style.display = 'none';
+    const upload = document.getElementById('upload' + side);
+    upload.classList.remove('has-file');
+    document.getElementById('file' + side).value = '';
+  });
+}
+
+async function analyze() {
+  const docA = document.getElementById('docA').value.trim();
+  const docB = document.getElementById('docB').value.trim();
+  if (!docA || !docB) { setStatus('請輸入兩個版本的文件', 'err'); return; }
+
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = true;
+  btn.textContent = '分析中...';
+  document.getElementById('results').style.display = 'none';
+  setStatus('AI 分析中，請稍候...');
+
+  try {
+    const result = await api('/analyze', { doc_a: docA, doc_b: docB });
+    lastResult = result;
+    lastDocA   = docA;
+    lastDocB   = docB;
+    renderResult(result);
+    setStatus('分析完成！', 'ok');
+    document.getElementById('reportBtn').style.display = '';
+    await loadUserInfo();
+    updateUserUI();
+  } catch(e) {
+    setStatus('分析失敗：' + e.message, 'err');
+    if (e.message.includes('免費方案')) {
+      document.getElementById('upgradeBanner').style.display = '';
+    }
+  }
+
+  btn.disabled = false;
+  btn.textContent = '重新分析';
+}
+
+function renderResult(r) {
+  const typeMap   = { '新增': 'tag-add', '刪除': 'tag-remove', '修改': 'tag-change' };
+  const riskClass = { '低': 'risk-low', '中': 'risk-mid', '高': 'risk-high' };
+
+  document.getElementById('metricsRow').innerHTML = `
+    <div class="metric"><div class="metric-val" style="color:#2d6a0a">+${r.added}</div><div class="metric-lbl">新增項目</div></div>
+    <div class="metric"><div class="metric-val" style="color:#9a2222">-${r.removed}</div><div class="metric-lbl">刪除項目</div></div>
+    <div class="metric"><div class="metric-val" style="color:#7a4a08">${r.changed}</div><div class="metric-lbl">修改項目</div></div>
+  `;
+
+  const detailsHtml = (r.details || []).map(d => `
+    <div class="diff-item">
+      <div class="diff-header">
+        <span class="tag ${typeMap[d.type] || 'tag-change'}">${d.type}</span>
+        <span class="diff-title">${d.item}</span>
+      </div>
+      <p class="diff-desc">${d.description}</p>
+      ${d.risk ? `<span class="risk-note">⚠ ${d.risk}</span>` : ''}
+    </div>
+  `).join('');
+
+  document.getElementById('resultCard').innerHTML = `
+    <div class="risk-row">
+      <span style="font-size:14px;font-weight:600;">風險等級：</span>
+      <span class="risk-badge ${riskClass[r.risk_level]}">${r.risk_level}</span>
+      <span class="summary-text">${r.summary}</span>
+    </div>
+    <hr class="divider">
+    ${detailsHtml}
+  `;
+  document.getElementById('results').style.display = 'block';
+}
+
+
+// ── 報告產生 ──────────────────────────────────────────
+function generateReport() {
+  if (!lastResult) return;
+
+  const now       = new Date().toLocaleString('zh-TW');
+  const riskColor = { '低': '#2d6a0a', '中': '#7a4a08', '高': '#9a2222' };
+  const riskBg    = { '低': '#eaf3de', '中': '#faeeda', '高': '#fcebeb' };
+  const typeLabel = { '新增': '新增', '刪除': '刪除', '修改': '修改' };
+  const typeColor = { '新增': '#2d6a0a', '刪除': '#9a2222', '修改': '#7a4a08' };
+  const typeBg    = { '新增': '#eaf3de', '刪除': '#fcebeb', '修改': '#faeeda' };
+
+  // 風險分數圓環
+  const score     = lastResult.risk_score || 5;
+  const scoreColor = score <= 3 ? '#2d6a0a' : score <= 6 ? '#7a4a08' : '#9a2222';
+  const circumference = 2 * Math.PI * 36;
+  const dashOffset = circumference * (1 - score / 10);
+
+  // 原文對照表格
+  const diffRows = (lastResult.details || []).map(d => {
+    const textA = d.text_a ? highlightText(escHtml(d.text_a), 'del') : '<span style="color:#aaa">（無）</span>';
+    const textB = d.text_b ? highlightText(escHtml(d.text_b), 'ins') : '<span style="color:#aaa">（無）</span>';
+    return `
+      <tr>
+        <td style="padding:12px 14px; vertical-align:top; width:22%;">
+          <span style="display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;background:${typeBg[d.type]};color:${typeColor[d.type]}">${typeLabel[d.type]}</span>
+          <div style="font-weight:600;font-size:13px;margin-top:5px;">${escHtml(d.item)}</div>
+        </td>
+        <td style="padding:12px 14px; vertical-align:top; font-size:13px; line-height:1.7; background:#fff8f8; border-left:3px solid #f09595;">${textA}</td>
+        <td style="padding:12px 14px; vertical-align:top; font-size:13px; line-height:1.7; background:#f8fff8; border-left:3px solid #97c459;">${textB}</td>
+        <td style="padding:12px 14px; vertical-align:top; font-size:13px; color:#555; line-height:1.6;">
+          ${escHtml(d.description)}
+          ${d.risk ? `<div style="margin-top:6px;padding:4px 8px;background:#faeeda;color:#7a4a08;border-radius:5px;font-size:12px;">⚠ ${escHtml(d.risk)}</div>` : ''}
+        </td>
+      </tr>`;
+  }).join('');
+
+  // 建議事項
+  const suggestionsHtml = (lastResult.suggestions || []).map(s =>
+    `<li style="margin-bottom:6px;">${escHtml(s)}</li>`
+  ).join('');
+
+  const html = `<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>文件比對報告</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft JhengHei', sans-serif; background: #f5f4f0; color: #1a1a1a; padding: 2rem; }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  .cover { background: #1a1a1a; color: #fff; border-radius: 14px; padding: 2.5rem; margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1.5rem; }
+  .cover h1 { font-size: 26px; font-weight: 700; margin-bottom: 6px; }
+  .cover .meta { font-size: 13px; color: #aaa; line-height: 2; }
+  .stats { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-bottom: 1.5rem; }
+  .stat-card { background: #fff; border-radius: 10px; padding: 16px; border: 1px solid #e8e6e0; }
+  .stat-val { font-size: 28px; font-weight: 700; }
+  .stat-lbl { font-size: 12px; color: #888; margin-top: 2px; }
+  .section { background: #fff; border-radius: 12px; border: 1px solid #e8e6e0; padding: 1.5rem; margin-bottom: 1.5rem; }
+  .section-title { font-size: 16px; font-weight: 700; margin-bottom: 1.25rem; padding-bottom: 10px; border-bottom: 1px solid #f0eeea; display: flex; align-items: center; gap: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th { background: #f5f4f0; padding: 10px 14px; text-align: left; font-weight: 600; font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: .05em; }
+  tbody tr { border-bottom: 1px solid #f0eeea; }
+  tbody tr:last-child { border-bottom: none; }
+  .highlight-del { background: #fde8e8; padding: 1px 2px; border-radius: 2px; }
+  .highlight-ins { background: #e8f5e8; padding: 1px 2px; border-radius: 2px; }
+  .suggestions li { color: #333; font-size: 14px; line-height: 1.7; }
+  .footer { text-align: center; font-size: 12px; color: #aaa; margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #e8e6e0; }
+  @media print {
+    body { background: #fff; padding: 0; }
+    .cover { border-radius: 0; }
+    .no-print { display: none; }
+    .section { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- 封面 -->
+  <div class="cover">
+    <div>
+      <h1>📄 文件比對報告</h1>
+      <div class="meta">
+        產出時間：${now}<br>
+        分析摘要：${escHtml(lastResult.summary || '')}
+      </div>
+    </div>
+    <div style="text-align:center;">
+      <svg width="100" height="100" viewBox="0 0 100 100">
+        <circle cx="50" cy="50" r="36" fill="none" stroke="#333" stroke-width="8"/>
+        <circle cx="50" cy="50" r="36" fill="none" stroke="${scoreColor}" stroke-width="8"
+          stroke-dasharray="${circumference}" stroke-dashoffset="${dashOffset}"
+          stroke-linecap="round" transform="rotate(-90 50 50)"/>
+        <text x="50" y="46" text-anchor="middle" font-size="22" font-weight="700" fill="#fff">${score}</text>
+        <text x="50" y="62" text-anchor="middle" font-size="11" fill="#aaa">/10</text>
+      </svg>
+      <div style="font-size:12px;color:#aaa;margin-top:4px;">風險評分</div>
+    </div>
+  </div>
+
+  <!-- 統計數字 -->
+  <div class="stats">
+    <div class="stat-card"><div class="stat-val" style="color:#2d6a0a">+${lastResult.added}</div><div class="stat-lbl">新增條款</div></div>
+    <div class="stat-card"><div class="stat-val" style="color:#9a2222">-${lastResult.removed}</div><div class="stat-lbl">刪除條款</div></div>
+    <div class="stat-card"><div class="stat-val" style="color:#7a4a08">${lastResult.changed}</div><div class="stat-lbl">修改條款</div></div>
+  </div>
+
+  <!-- 風險評估與建議 -->
+  <div class="section">
+    <div class="section-title">
+      ⚠️ 風險評估與建議
+      <span style="padding:3px 12px;border-radius:99px;font-size:12px;font-weight:600;background:${riskBg[lastResult.risk_level]};color:${riskColor[lastResult.risk_level]}">${lastResult.risk_level}風險</span>
+    </div>
+    ${suggestionsHtml ? `<ul style="padding-left:1.25rem;">${suggestionsHtml}</ul>` : '<p style="color:#888;font-size:13px;">無特別建議</p>'}
+  </div>
+
+  <!-- 原文對照 -->
+  <div class="section">
+    <div class="section-title">📋 原文差異對照</div>
+    <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:18%">變更項目</th>
+            <th style="width:27%">版本 A（舊版）</th>
+            <th style="width:27%">版本 B（新版）</th>
+            <th style="width:28%">說明與風險</th>
+          </tr>
+        </thead>
+        <tbody>${diffRows || '<tr><td colspan="4" style="text-align:center;padding:2rem;color:#aaa;">無差異項目</td></tr>'}</tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="footer">由文件比對工具自動產生・僅供參考，不構成法律意見</div>
+
+  <!-- 列印按鈕（列印時隱藏）-->
+  <div class="no-print" style="text-align:center;margin-top:1.5rem;">
+    <button onclick="window.print()" style="padding:10px 28px;font-size:14px;font-weight:600;background:#1a1a1a;color:#fff;border:none;border-radius:8px;cursor:pointer;">🖨️ 列印 / 存成 PDF</button>
+  </div>
+</div>
+<!-- 隱私說明 Modal -->
+<div id="privacyModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:2000; align-items:center; justify-content:center;">
+  <div style="background:#fff; border-radius:14px; padding:2rem; max-width:520px; width:90vw; max-height:85vh; overflow-y:auto; position:relative;">
+    <button onclick="closePrivacyModal()" style="position:absolute; top:16px; right:16px; background:none; border:none; font-size:20px; cursor:pointer; color:#888;">✕</button>
+    <h2 style="font-size:18px; font-weight:700; margin-bottom:1rem;">🔒 隱私與資料安全說明</h2>
+
+    <div style="font-size:14px; line-height:1.9; color:#333;">
+
+      <p style="font-weight:600; margin-bottom:6px;">您的文件如何被處理？</p>
+      <p style="color:#555; margin-bottom:1.25rem;">您上傳或貼入的文件內容，會在您的裝置上解析成純文字，再透過加密連線（HTTPS）傳送給我們的伺服器進行分析。<strong>我們不會在資料庫中儲存您的原始文件內容。</strong></p>
+
+      <p style="font-weight:600; margin-bottom:6px;">AI 分析使用什麼服務？</p>
+      <p style="color:#555; margin-bottom:1.25rem;">分析功能使用 OpenAI API。根據 OpenAI 的 API 使用條款，<strong>透過 API 傳送的資料預設不會用於訓練 AI 模型</strong>，這與 ChatGPT 網頁版的政策不同。詳情請參閱 <a href="https://openai.com/policies/api-data-usage-policies" target="_blank" style="color:#185fa5;">OpenAI API 資料使用政策</a>。</p>
+
+      <p style="font-weight:600; margin-bottom:6px;">我們儲存哪些資料？</p>
+      <ul style="color:#555; padding-left:1.25rem; margin-bottom:1.25rem; line-height:2;">
+        <li>您的帳號資訊（Email、加密後的密碼）</li>
+        <li>使用次數記錄（用於計算免費額度與點數）</li>
+        <li>AI 分析結果摘要（用於歷史記錄功能，如已開啟）</li>
+        <li><strong>不儲存</strong>您的原始文件內容</li>
+      </ul>
+
+      <p style="font-weight:600; margin-bottom:6px;">適合哪些文件？</p>
+      <p style="color:#555; margin-bottom:1.25rem;">本工具適合一般商業合約、服務條款、採購文件等的版本比對。若您的文件涉及國家機密、高度敏感個資或受特定法規保護的資料，建議先諮詢您的法務或資安團隊。</p>
+
+      <div style="background:#e6f1fb; border-radius:8px; padding:12px 14px; font-size:13px; color:#0c447c;">
+        💡 如有任何資料安全疑慮，歡迎聯絡我們進一步說明。
+      </div>
+    </div>
+
+    <button onclick="closePrivacyModal()" style="margin-top:1.5rem; width:100%; padding:10px; font-size:14px; font-weight:600; background:#1a1a1a; color:#fff; border:none; border-radius:8px; cursor:pointer;">我了解了</button>
+  </div>
+</div>
+
+</body>
+</html>`;
+
+  // 開新視窗顯示報告
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
+}
+
+function escHtml(str) {
+  return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function highlightText(text, type) {
+  // 簡單的高亮：直接把整段文字包起來
+  const cls = type === 'del' ? 'highlight-del' : 'highlight-ins';
+  return `<span class="${cls}">${text}</span>`;
+}
+
+// ── 隱私說明 ──────────────────────────────────────────
+function showPrivacyModal() {
+  const modal = document.getElementById('privacyModal');
+  modal.style.display = 'flex';
+}
+function closePrivacyModal() {
+  document.getElementById('privacyModal').style.display = 'none';
+}
+// 點擊背景關閉
+document.addEventListener('click', e => {
+  const modal = document.getElementById('privacyModal');
+  if (e.target === modal) closePrivacyModal();
+});
+
+// ── 檔案上傳 ──────────────────────────────────────────
+function handleDragOver(e, side) {
+  e.preventDefault();
+  document.getElementById('upload' + side).classList.add('drag-over');
+}
+function handleDragLeave(side) {
+  document.getElementById('upload' + side).classList.remove('drag-over');
+}
+function handleDrop(e, side) {
+  e.preventDefault();
+  handleDragLeave(side);
+  const file = e.dataTransfer.files[0];
+  if (file) processFile(file, side);
+}
+function handleFileSelect(e, side) {
+  const file = e.target.files[0];
+  if (file) processFile(file, side);
+}
+
+async function processFile(file, side) {
+  const maxMB = 10;
+  if (file.size > maxMB * 1024 * 1024) {
+    setStatus(`檔案過大，請上傳 ${maxMB}MB 以內的檔案`, 'err'); return;
+  }
+  const upload   = document.getElementById('upload' + side);
+  const nameEl   = document.getElementById('fileName' + side);
+  const textarea = document.getElementById('doc' + side);
+
+  upload.classList.add('has-file');
+  nameEl.style.display = 'block';
+  nameEl.innerHTML = `📎 ${file.name} <span class="clear-file" onclick="clearFile('${side}')">✕ 清除</span>`;
+  setStatus('解析檔案中...', '');
+
+  try {
+    let text = '';
+    const ext = file.name.split('.').pop().toLowerCase();
+
+    if (ext === 'txt') {
+      text = await file.text();
+    } else if (ext === 'pdf') {
+      text = await extractPDF(file);
+    } else if (ext === 'docx') {
+      text = await extractDOCX(file);
+    } else {
+      setStatus('不支援此檔案格式', 'err'); return;
+    }
+
+    if (!text.trim()) { setStatus('無法從檔案擷取文字，請確認檔案內容', 'err'); return; }
+    textarea.value = text.trim();
+    setStatus(`版本 ${side} 已載入（${text.length} 字元）`, 'ok');
+  } catch(e) {
+    setStatus('解析失敗：' + e.message, 'err');
+    clearFile(side);
+  }
+}
+
+function clearFile(side) {
+  document.getElementById('doc' + side).value = '';
+  document.getElementById('fileName' + side).style.display = 'none';
+  document.getElementById('upload' + side).classList.remove('has-file');
+  document.getElementById('file' + side).value = '';
+  setStatus('');
+}
+
+async function extractPDF(file) {
+  // 動態載入 PDF.js
+  if (!window.pdfjsLib) {
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf   = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const parts = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page    = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    parts.push(content.items.map(item => item.str).join(' '));
+  }
+  return parts.join('\n');
+}
+
+async function extractDOCX(file) {
+  if (!window.mammoth) {
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js');
+  }
+  const arrayBuffer = await file.arrayBuffer();
+  const result = await window.mammoth.extractRawText({ arrayBuffer });
+  return result.value;
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
+    const s   = document.createElement('script');
+    s.src     = src;
+    s.onload  = resolve;
+    s.onerror = () => reject(new Error('載入函式庫失敗：' + src));
+    document.head.appendChild(s);
+  });
+}
+
+// ── 點數包 ────────────────────────────────────────────
+async function toggleCreditsPanel() {
+  const panel = document.getElementById('creditsPanel');
+  if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+  panel.style.display = 'flex';
+  if (document.getElementById('packageList').innerHTML) return;
+  try {
+    const packages = await api('/credits/packages', null, 'GET');
+    document.getElementById('packageList').innerHTML = packages.map(p => `
+      <div style="background:#fff; border:${p.popular ? '2px solid #185fa5' : '1px solid #ddd'}; border-radius:10px; padding:14px; text-align:center; position:relative;">
+        ${p.popular ? '<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:#185fa5;color:#fff;font-size:11px;font-weight:600;padding:2px 10px;border-radius:99px;">最划算</div>' : ''}
+        <div style="font-size:20px; font-weight:700; color:#1a1a1a; margin-bottom:2px;">${p.label}</div>
+        <div style="font-size:13px; color:#888; margin-bottom:10px;">USD $${p.price}</div>
+        <button onclick="buyCredits('${p.id}')" style="width:100%; padding:8px; font-size:13px; font-weight:600; background:#1a1a1a; color:#fff; border:none; border-radius:7px; cursor:pointer;">購買</button>
+      </div>
+    `).join('');
+  } catch(e) { document.getElementById('packageList').innerHTML = '<p style="color:red;font-size:13px;">載入失敗</p>'; }
+}
+
+async function buyCredits(packageId) {
+  setStatus('建立訂單中...', '');
+  try {
+    const { order_id, package: pkg } = await api('/credits/create-order', { package_id: packageId });
+    const config = await loadPaypalConfig();
+    await loadPaypalSDK(config.client_id);
+    showCreditsModal(order_id, pkg);
+  } catch(e) { setStatus('建立訂單失敗：' + e.message, 'err'); }
+}
+
+function showCreditsModal(orderId, pkg) {
+  const overlay = document.createElement('div');
+  overlay.id = 'creditsOverlay';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;';
+  const modal = document.createElement('div');
+  modal.style.cssText = 'background:#fff;border-radius:14px;padding:2rem;width:360px;max-width:90vw;';
+  modal.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+      <h3 style="font-size:18px;font-weight:600;">購買 ${pkg.label} 點數</h3>
+      <button onclick="document.getElementById('creditsOverlay').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#888;">✕</button>
+    </div>
+    <div style="background:#f5f4f0;border-radius:10px;padding:14px;margin-bottom:1.25rem;font-size:14px;">
+      <div style="font-size:22px;font-weight:700;margin-bottom:4px;">$${pkg.price} <span style="font-size:14px;font-weight:400;color:#888;">USD 一次性付款</span></div>
+      <div>✓ ${pkg.label}比對次數</div>
+      <div>✓ 點數永不過期</div>
+      <div>✓ 免費次數用完後自動扣點</div>
+    </div>
+    <div id="creditsBtnContainer"></div>
+    <p style="font-size:12px;color:#999;text-align:center;margin-top:10px;">付款由 PayPal 安全處理</p>
+  `;
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  window.paypal.Buttons({
+    style: { shape: 'rect', color: 'blue', layout: 'vertical', label: 'pay' },
+    createOrder: () => orderId,
+    onApprove: async () => {
+      document.getElementById('creditsOverlay').remove();
+      setStatus('確認付款中...', '');
+      try {
+        const result = await api('/credits/capture-order', { order_id: orderId });
+        await loadUserInfo();
+        updateUserUI();
+        setStatus(`✓ 成功購買 ${result.credits_added} 次點數！目前共 ${result.total_credits} 點`, 'ok');
+      } catch(e) { setStatus('付款確認失敗：' + e.message, 'err'); }
+    },
+    onError: (err) => { document.getElementById('creditsOverlay')?.remove(); setStatus('付款失敗，請稍後再試', 'err'); }
+  }).render('#creditsBtnContainer');
+}
+
+// ── 邀請好友 ───────────────────────────────────────────
+async function toggleReferralPanel() {
+  const panel = document.getElementById('referralPanel');
+  if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  try {
+    const stats = await api('/referral/stats', null, 'GET');
+    document.getElementById('referralLink').value = stats.referral_link;
+    document.getElementById('referralStats').textContent =
+      `已邀請 ${stats.total_referred} 位好友・每邀請一人雙方各得 ${stats.bonus_per_ref} 次點數`;
+  } catch(e) {}
+}
+
+function copyReferral() {
+  const input = document.getElementById('referralLink');
+  input.select();
+  navigator.clipboard.writeText(input.value).then(() => {
+    setStatus('邀請連結已複製！', 'ok');
+  }).catch(() => {
+    document.execCommand('copy');
+    setStatus('邀請連結已複製！', 'ok');
+  });
+}
+
+// ── PayPal 訂閱 ───────────────────────────────────────
+let paypalConfig = null;
+
+async function loadPaypalConfig() {
+  if (paypalConfig) return paypalConfig;
+  // 如果前端已填好，直接用（離線/本地開啟時不需要後端）
+  if (PAYPAL_CLIENT_ID && PAYPAL_PLAN_ID) {
+    paypalConfig = { client_id: PAYPAL_CLIENT_ID, plan_id: PAYPAL_PLAN_ID };
+    return paypalConfig;
+  }
+  // 否則從後端取得（後端運作中時的正式流程）
+  paypalConfig = await api('/paypal/plans', null, 'GET');
+  return paypalConfig;
+}
+
+async function startUpgrade() {
+  // 同時處理 header 按鈕和 banner 按鈕
+  const btns = [
+    document.getElementById('upgradeBtn'),
+    document.getElementById('upgradeHeaderBtn')
+  ].filter(Boolean);
+  btns.forEach(b => { b.disabled = true; b.textContent = '載入中...'; });
+
+  try {
+    const config = await loadPaypalConfig();
+    if (!config.client_id || !config.plan_id) {
+      throw new Error('請先在 index.html 填入 PAYPAL_CLIENT_ID 和 PAYPAL_PLAN_ID');
+    }
+    await loadPaypalSDK(config.client_id);
+    showPaypalModal(config.plan_id);
+  } catch(e) {
+    alert('載入付款介面失敗：' + e.message);
+  }
+  btns.forEach(b => { b.disabled = false; });
+  const upgradeBtn = document.getElementById('upgradeBtn');
+  if (upgradeBtn) upgradeBtn.textContent = '立即升級 →';
+  const headerBtn = document.getElementById('upgradeHeaderBtn');
+  if (headerBtn) headerBtn.textContent = '⚡ 升級無限版';
+}
+
+function showPaypalModal(planId) {
+  // 建立 modal overlay
+  const overlay = document.createElement('div');
+  overlay.id = 'paypalOverlay';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;';
+
+  const modal = document.createElement('div');
+  modal.style.cssText = 'background:#fff;border-radius:14px;padding:2rem;width:360px;max-width:90vw;';
+  modal.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+      <h3 style="font-size:18px;font-weight:600;">升級付費方案</h3>
+      <button onclick="closePaypalModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#888;">✕</button>
+    </div>
+    <div style="background:#f5f4f0;border-radius:10px;padding:14px;margin-bottom:1.25rem;font-size:14px;line-height:1.8;">
+      <div style="font-size:22px;font-weight:700;margin-bottom:4px;">USD $6 <span style="font-size:14px;font-weight:400;color:#888;">/ 月</span></div>
+      <div>✓ 無限次文件比對</div>
+      <div>✓ 優先處理速度</div>
+      <div>✓ 隨時可取消</div>
+    </div>
+    <div id="paypalButtonContainer"></div>
+    <p style="font-size:12px;color:#999;text-align:center;margin-top:10px;">付款由 PayPal 安全處理</p>
+  `;
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  // 渲染 PayPal 訂閱按鈕
+  if (window.paypal) {
+    window.paypal.Buttons({
+      style: { shape: 'rect', color: 'blue', layout: 'vertical', label: 'subscribe' },
+      createSubscription: (data, actions) => {
+        return actions.subscription.create({ plan_id: planId });
+      },
+      onApprove: async (data) => {
+        closePaypalModal();
+        setStatus('訂閱確認中...', '');
+        try {
+          await api('/paypal/activate', { subscription_id: data.subscriptionID });
+          await loadUserInfo();
+          updateUserUI();
+          setStatus('升級成功！歡迎使用付費方案 🎉', 'ok');
+        } catch(e) {
+          setStatus('升級確認失敗，請聯絡客服：' + e.message, 'err');
+        }
+      },
+      onError: (err) => {
+        console.error('PayPal error:', err);
+        closePaypalModal();
+        const msg = typeof err === 'string' ? err : (err.message || JSON.stringify(err));
+        setStatus('PayPal 錯誤：' + msg, 'err');
+      }
+    }).render('#paypalButtonContainer');
+  } else {
+    document.getElementById('paypalButtonContainer').innerHTML =
+      '<p style="color:#c0392b;font-size:13px;">PayPal 載入失敗，請重新整理頁面後再試</p>';
+  }
+}
+
+function closePaypalModal() {
+  const overlay = document.getElementById('paypalOverlay');
+  if (overlay) overlay.remove();
+}
+
+// ── 工具 ──────────────────────────────────────────────
+function setStatus(msg, type='') {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = 'status ' + type;
+}
+
+async function api(path, body=null, method='POST') {
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json' }
+  };
+  if (token) opts.headers['Authorization'] = 'Bearer ' + token;
+  if (body)  opts.body = JSON.stringify(body);
+
+  const res  = await fetch(API_BASE + path, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || '請求失敗');
+  return data;
+}
+</script>
+<!-- PayPal SDK 由 startUpgrade() 動態載入 -->
+<!-- 隱私說明 Modal -->
+<div id="privacyModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:2000; align-items:center; justify-content:center;">
+  <div style="background:#fff; border-radius:14px; padding:2rem; max-width:520px; width:90vw; max-height:85vh; overflow-y:auto; position:relative;">
+    <button onclick="closePrivacyModal()" style="position:absolute; top:16px; right:16px; background:none; border:none; font-size:20px; cursor:pointer; color:#888;">✕</button>
+    <h2 style="font-size:18px; font-weight:700; margin-bottom:1rem;">🔒 隱私與資料安全說明</h2>
+
+    <div style="font-size:14px; line-height:1.9; color:#333;">
+
+      <p style="font-weight:600; margin-bottom:6px;">您的文件如何被處理？</p>
+      <p style="color:#555; margin-bottom:1.25rem;">您上傳或貼入的文件內容，會在您的裝置上解析成純文字，再透過加密連線（HTTPS）傳送給我們的伺服器進行分析。<strong>我們不會在資料庫中儲存您的原始文件內容。</strong></p>
+
+      <p style="font-weight:600; margin-bottom:6px;">AI 分析使用什麼服務？</p>
+      <p style="color:#555; margin-bottom:1.25rem;">分析功能使用 OpenAI API。根據 OpenAI 的 API 使用條款，<strong>透過 API 傳送的資料預設不會用於訓練 AI 模型</strong>，這與 ChatGPT 網頁版的政策不同。詳情請參閱 <a href="https://openai.com/policies/api-data-usage-policies" target="_blank" style="color:#185fa5;">OpenAI API 資料使用政策</a>。</p>
+
+      <p style="font-weight:600; margin-bottom:6px;">我們儲存哪些資料？</p>
+      <ul style="color:#555; padding-left:1.25rem; margin-bottom:1.25rem; line-height:2;">
+        <li>您的帳號資訊（Email、加密後的密碼）</li>
+        <li>使用次數記錄（用於計算免費額度與點數）</li>
+        <li>AI 分析結果摘要（用於歷史記錄功能，如已開啟）</li>
+        <li><strong>不儲存</strong>您的原始文件內容</li>
+      </ul>
+
+      <p style="font-weight:600; margin-bottom:6px;">適合哪些文件？</p>
+      <p style="color:#555; margin-bottom:1.25rem;">本工具適合一般商業合約、服務條款、採購文件等的版本比對。若您的文件涉及國家機密、高度敏感個資或受特定法規保護的資料，建議先諮詢您的法務或資安團隊。</p>
+
+      <div style="background:#e6f1fb; border-radius:8px; padding:12px 14px; font-size:13px; color:#0c447c;">
+        💡 如有任何資料安全疑慮，歡迎聯絡我們進一步說明。
+      </div>
+    </div>
+
+    <button onclick="closePrivacyModal()" style="margin-top:1.5rem; width:100%; padding:10px; font-size:14px; font-weight:600; background:#1a1a1a; color:#fff; border:none; border-radius:8px; cursor:pointer;">我了解了</button>
+  </div>
+</div>
+
+</body>
+</html>

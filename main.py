@@ -1,0 +1,429 @@
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
+from datetime import datetime, timedelta
+import sqlite3, hashlib, jwt, httpx, os, json, secrets, string
+from contextlib import contextmanager
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = FastAPI(title="Doc Compare API")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# ── 設定 ──────────────────────────────────────────────
+OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY", "")
+JWT_SECRET       = os.getenv("JWT_SECRET", "change-this-secret-in-production")
+FREE_LIMIT       = int(os.getenv("FREE_LIMIT", "3"))
+DB_PATH          = os.getenv("DB_PATH", "doc_compare.db")
+PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID", "")
+PAYPAL_SECRET    = os.getenv("PAYPAL_SECRET", "")
+PAYPAL_PLAN_ID   = os.getenv("PAYPAL_PLAN_ID", "")
+PAYPAL_MODE      = os.getenv("PAYPAL_MODE", "sandbox")
+PAYPAL_BASE      = "https://api-m.sandbox.paypal.com" if PAYPAL_MODE == "sandbox" else "https://api-m.paypal.com"
+FRONTEND_URL     = os.getenv("FRONTEND_URL", "http://localhost:3000")
+REFERRAL_BONUS   = int(os.getenv("REFERRAL_BONUS", "3"))   # 邀請雙方各得幾次
+security         = HTTPBearer()
+
+# 點數包定義
+CREDIT_PACKAGES = [
+    {"id": "pack_20",  "credits": 20,  "price": "3.00",  "label": "20 次",  "popular": False},
+    {"id": "pack_50",  "credits": 50,  "price": "6.00",  "label": "50 次",  "popular": True},
+    {"id": "pack_100", "credits": 100, "price": "10.00", "label": "100 次", "popular": False},
+]
+
+# ── 資料庫 ────────────────────────────────────────────
+@contextmanager
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+def init_db():
+    with get_db() as db:
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+                email                  TEXT    UNIQUE NOT NULL,
+                password               TEXT    NOT NULL,
+                plan                   TEXT    NOT NULL DEFAULT 'free',
+                credits                INTEGER NOT NULL DEFAULT 0,
+                referral_code          TEXT    UNIQUE,
+                referred_by            INTEGER,
+                paypal_subscription_id TEXT,
+                plan_expires_at        TEXT,
+                created_at             TEXT    NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS usage_log (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                used_at    TEXT    NOT NULL,
+                source     TEXT    NOT NULL DEFAULT 'free',
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+            CREATE TABLE IF NOT EXISTS credit_orders (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id        INTEGER NOT NULL,
+                package_id     TEXT    NOT NULL,
+                credits        INTEGER NOT NULL,
+                amount         TEXT    NOT NULL,
+                paypal_order_id TEXT,
+                status         TEXT    NOT NULL DEFAULT 'pending',
+                created_at     TEXT    NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+        """)
+        # 幫舊資料補欄位（若已存在會忽略）
+        for col_sql in [
+            "ALTER TABLE users ADD COLUMN credits INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN referral_code TEXT",
+            "ALTER TABLE users ADD COLUMN referred_by INTEGER",
+            "ALTER TABLE usage_log ADD COLUMN source TEXT NOT NULL DEFAULT 'free'",
+        ]:
+            try:
+                db.execute(col_sql)
+            except Exception:
+                pass
+
+init_db()
+
+# ── 工具函式 ──────────────────────────────────────────
+def hash_password(pw: str) -> str:
+    return hashlib.sha256(pw.encode()).hexdigest()
+
+def make_token(user_id: int, email: str) -> str:
+    payload = {"sub": str(user_id), "email": email, "exp": datetime.utcnow() + timedelta(days=30)}
+    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=["HS256"])
+        return {"id": int(payload["sub"]), "email": payload["email"]}
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Token 已過期，請重新登入")
+    except Exception:
+        raise HTTPException(401, "無效的 Token")
+
+def gen_referral_code() -> str:
+    chars = string.ascii_uppercase + string.digits
+    return ''.join(secrets.choice(chars) for _ in range(8))
+
+def get_monthly_usage(db, user_id: int) -> int:
+    first_day = datetime.now().strftime("%Y-%m-01")
+    row = db.execute(
+        "SELECT COUNT(*) as cnt FROM usage_log WHERE user_id=? AND used_at>=? AND source='free'",
+        (user_id, first_day)
+    ).fetchone()
+    return row["cnt"]
+
+# ── PayPal 工具 ───────────────────────────────────────
+async def get_paypal_token() -> str:
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{PAYPAL_BASE}/v1/oauth2/token",
+            auth=(PAYPAL_CLIENT_ID, PAYPAL_SECRET),
+            data={"grant_type": "client_credentials"}
+        )
+        if resp.status_code != 200:
+            raise HTTPException(502, "PayPal 驗證失敗")
+        return resp.json()["access_token"]
+
+async def get_paypal_subscription(subscription_id: str) -> dict:
+    token = await get_paypal_token()
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{PAYPAL_BASE}/v1/billing/subscriptions/{subscription_id}",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        return resp.json()
+
+async def capture_paypal_order(order_id: str) -> dict:
+    token = await get_paypal_token()
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{PAYPAL_BASE}/v2/checkout/orders/{order_id}/capture",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        )
+        return resp.json()
+
+# ── Schema ────────────────────────────────────────────
+class RegisterRequest(BaseModel):
+    email:        str
+    password:     str
+    referral_code: str = ""
+
+class LoginRequest(BaseModel):
+    email:    str
+    password: str
+
+class AnalyzeRequest(BaseModel):
+    doc_a: str
+    doc_b: str
+
+# ── 路由：Auth ────────────────────────────────────────
+@app.post("/auth/register")
+def register(req: RegisterRequest):
+    with get_db() as db:
+        existing = db.execute("SELECT id FROM users WHERE email=?", (req.email,)).fetchone()
+        if existing:
+            raise HTTPException(400, "此 Email 已被註冊")
+
+        # 驗證邀請碼
+        referrer_id = None
+        if req.referral_code:
+            referrer = db.execute(
+                "SELECT id FROM users WHERE referral_code=?", (req.referral_code.upper(),)
+            ).fetchone()
+            if not referrer:
+                raise HTTPException(400, "邀請碼無效")
+            referrer_id = referrer["id"]
+
+        # 建立新用戶，附上邀請碼
+        my_code = gen_referral_code()
+        # 確保不重複
+        while db.execute("SELECT id FROM users WHERE referral_code=?", (my_code,)).fetchone():
+            my_code = gen_referral_code()
+
+        db.execute(
+            "INSERT INTO users (email, password, plan, credits, referral_code, referred_by, created_at) VALUES (?,?,?,?,?,?,?)",
+            (req.email, hash_password(req.password), "free", 0, my_code, referrer_id, datetime.now().isoformat())
+        )
+        user_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        # 雙方各得 REFERRAL_BONUS 次點數
+        if referrer_id:
+            db.execute("UPDATE users SET credits=credits+? WHERE id=?", (REFERRAL_BONUS, referrer_id))
+            db.execute("UPDATE users SET credits=credits+? WHERE id=?", (REFERRAL_BONUS, user_id))
+
+    return {"token": make_token(user_id, req.email), "plan": "free"}
+
+@app.post("/auth/login")
+def login(req: LoginRequest):
+    with get_db() as db:
+        user = db.execute(
+            "SELECT id, plan FROM users WHERE email=? AND password=?",
+            (req.email, hash_password(req.password))
+        ).fetchone()
+        if not user:
+            raise HTTPException(401, "Email 或密碼錯誤")
+    return {"token": make_token(user["id"], req.email), "plan": user["plan"]}
+
+@app.get("/auth/me")
+def me(current_user: dict = Depends(verify_token)):
+    with get_db() as db:
+        user = db.execute(
+            "SELECT plan, credits, referral_code FROM users WHERE id=?", (current_user["id"],)
+        ).fetchone()
+        usage = get_monthly_usage(db, current_user["id"])
+    return {
+        "email":         current_user["email"],
+        "plan":          user["plan"],
+        "credits":       user["credits"],
+        "referral_code": user["referral_code"],
+        "usage":         usage,
+        "free_limit":    FREE_LIMIT,
+        "remaining":     max(0, FREE_LIMIT - usage) if user["plan"] == "free" else 999
+    }
+
+# ── 路由：點數包 ──────────────────────────────────────
+@app.get("/credits/packages")
+def list_packages():
+    return CREDIT_PACKAGES
+
+@app.post("/credits/create-order")
+async def create_credit_order(request: Request, current_user: dict = Depends(verify_token)):
+    body       = await request.json()
+    package_id = body.get("package_id")
+    package    = next((p for p in CREDIT_PACKAGES if p["id"] == package_id), None)
+    if not package:
+        raise HTTPException(400, "無效的點數包")
+
+    token = await get_paypal_token()
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{PAYPAL_BASE}/v2/checkout/orders",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={
+                "intent": "CAPTURE",
+                "purchase_units": [{
+                    "amount": {"currency_code": "USD", "value": package["price"]},
+                    "description": f"文件比對工具 {package['label']} 點數包"
+                }]
+            }
+        )
+    if resp.status_code not in (200, 201):
+        raise HTTPException(502, "建立 PayPal 訂單失敗")
+
+    order_id = resp.json()["id"]
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO credit_orders (user_id, package_id, credits, amount, paypal_order_id, status, created_at) VALUES (?,?,?,?,?,?,?)",
+            (current_user["id"], package_id, package["credits"], package["price"], order_id, "pending", datetime.now().isoformat())
+        )
+    return {"order_id": order_id, "package": package}
+
+@app.post("/credits/capture-order")
+async def capture_credit_order(request: Request, current_user: dict = Depends(verify_token)):
+    body     = await request.json()
+    order_id = body.get("order_id")
+    if not order_id:
+        raise HTTPException(400, "缺少 order_id")
+
+    with get_db() as db:
+        order = db.execute(
+            "SELECT * FROM credit_orders WHERE paypal_order_id=? AND user_id=? AND status='pending'",
+            (order_id, current_user["id"])
+        ).fetchone()
+        if not order:
+            raise HTTPException(404, "訂單不存在或已處理")
+
+        # 向 PayPal 確認付款
+        result = await capture_paypal_order(order_id)
+        if result.get("status") != "COMPLETED":
+            raise HTTPException(402, f"付款未完成：{result.get('status')}")
+
+        # 加點數
+        db.execute("UPDATE credit_orders SET status='completed' WHERE paypal_order_id=?", (order_id,))
+        db.execute("UPDATE users SET credits=credits+? WHERE id=?", (order["credits"], current_user["id"]))
+
+        new_credits = db.execute("SELECT credits FROM users WHERE id=?", (current_user["id"],)).fetchone()["credits"]
+
+    return {"success": True, "credits_added": order["credits"], "total_credits": new_credits}
+
+# ── 路由：邀請碼 ──────────────────────────────────────
+@app.get("/referral/stats")
+def referral_stats(current_user: dict = Depends(verify_token)):
+    with get_db() as db:
+        user = db.execute("SELECT referral_code FROM users WHERE id=?", (current_user["id"],)).fetchone()
+        count = db.execute(
+            "SELECT COUNT(*) as cnt FROM users WHERE referred_by=?", (current_user["id"],)
+        ).fetchone()["cnt"]
+    return {
+        "referral_code":  user["referral_code"],
+        "referral_link":  f"{FRONTEND_URL}?ref={user['referral_code']}",
+        "total_referred": count,
+        "bonus_per_ref":  REFERRAL_BONUS,
+    }
+
+# ── 路由：PayPal 訂閱 ──────────────────────────────────
+@app.get("/paypal/plans")
+def get_plan_info():
+    return {"client_id": PAYPAL_CLIENT_ID, "plan_id": PAYPAL_PLAN_ID, "mode": PAYPAL_MODE}
+
+@app.post("/paypal/activate")
+async def activate_subscription(request: Request, current_user: dict = Depends(verify_token)):
+    body = await request.json()
+    subscription_id = body.get("subscription_id")
+    if not subscription_id:
+        raise HTTPException(400, "缺少 subscription_id")
+    sub    = await get_paypal_subscription(subscription_id)
+    status = sub.get("status", "")
+    if status not in ("ACTIVE", "APPROVED"):
+        raise HTTPException(400, f"訂閱狀態異常：{status}")
+    with get_db() as db:
+        db.execute(
+            "UPDATE users SET plan=?, paypal_subscription_id=? WHERE id=?",
+            ("pro", subscription_id, current_user["id"])
+        )
+    return {"success": True, "plan": "pro"}
+
+@app.post("/paypal/webhook")
+async def paypal_webhook(request: Request):
+    body       = await request.json()
+    event_type = body.get("event_type", "")
+    if event_type in ("BILLING.SUBSCRIPTION.CANCELLED", "BILLING.SUBSCRIPTION.EXPIRED"):
+        sid = body.get("resource", {}).get("id")
+        if sid:
+            with get_db() as db:
+                db.execute("UPDATE users SET plan='free', paypal_subscription_id=NULL WHERE paypal_subscription_id=?", (sid,))
+    elif event_type == "BILLING.SUBSCRIPTION.PAYMENT.FAILED":
+        sid = body.get("resource", {}).get("id")
+        if sid:
+            with get_db() as db:
+                db.execute("UPDATE users SET plan='free' WHERE paypal_subscription_id=?", (sid,))
+    return {"received": True}
+
+# ── 路由：分析 ────────────────────────────────────────
+@app.post("/analyze")
+async def analyze(req: AnalyzeRequest, current_user: dict = Depends(verify_token)):
+    with get_db() as db:
+        user = db.execute("SELECT plan, credits FROM users WHERE id=?", (current_user["id"],)).fetchone()
+
+        # 決定使用哪個額度
+        if user["plan"] == "pro":
+            source = "pro"
+        elif user["credits"] > 0:
+            source = "credits"   # 優先扣點數
+        else:
+            usage = get_monthly_usage(db, current_user["id"])
+            if usage >= FREE_LIMIT:
+                raise HTTPException(429, "免費額度與點數均已用完，請購買點數或升級付費方案")
+            source = "free"
+
+        if not OPENAI_API_KEY:
+            raise HTTPException(500, "伺服器未設定 OPENAI_API_KEY")
+
+        prompt = f"""你是一位專業文件比對助手，請比較以下兩版文件，以繁體中文回應。
+只回傳 JSON，不要 markdown、不要說明文字。
+
+格式：
+{{
+  "added": 數字,
+  "removed": 數字,
+  "changed": 數字,
+  "risk_level": "低或中或高",
+  "risk_score": 1到10的整數,
+  "summary": "一句話摘要",
+  "suggestions": ["建議事項1", "建議事項2"],
+  "details": [
+    {{
+      "type": "新增或刪除或修改",
+      "item": "條款名稱",
+      "description": "具體變更說明",
+      "risk": "風險提示，無則空字串",
+      "text_a": "版本A的原文片段，最多100字，無則空字串",
+      "text_b": "版本B的原文片段，最多100字，無則空字串"
+    }}
+  ]
+}}
+
+【版本A（舊版）】
+{req.doc_a}
+
+【版本B（新版）】
+{req.doc_b}"""
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={"model": "gpt-4o-mini", "max_tokens": 2000,
+                      "messages": [{"role": "user", "content": prompt}]}
+            )
+
+        if resp.status_code != 200:
+            raise HTTPException(502, f"OpenAI 回應錯誤: {resp.text}")
+
+        result_text = resp.json()["choices"][0]["message"]["content"]
+        result      = json.loads(result_text.replace("```json", "").replace("```", "").strip())
+
+        # 扣額度
+        if source == "credits":
+            db.execute("UPDATE users SET credits=credits-1 WHERE id=?", (current_user["id"],))
+        db.execute("INSERT INTO usage_log (user_id, used_at, source) VALUES (?,?,?)",
+                   (current_user["id"], datetime.now().isoformat(), source))
+
+        result["locked"]       = False
+        result["locked_count"] = 0
+        result["source"]       = source
+
+    return result
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "time": datetime.now().isoformat()}
