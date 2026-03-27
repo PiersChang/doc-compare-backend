@@ -52,6 +52,13 @@ CREDIT_PACKAGES = [
 # ── 資料庫 ────────────────────────────────────────────
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
+try:
+    import psycopg2
+    import psycopg2.extras
+    HAS_PG = True
+except ImportError:
+    HAS_PG = False
+
 @contextmanager
 def get_db():
     if DATABASE_URL and HAS_PG:
