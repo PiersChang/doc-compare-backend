@@ -5,6 +5,9 @@ from fastapi.responses import RedirectResponse, PlainTextResponse
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 import sqlite3, hashlib, jwt, httpx, os, json, secrets, string, hmac, urllib.parse
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from contextlib import contextmanager
 from dotenv import load_dotenv
 
@@ -25,6 +28,12 @@ PAYPAL_MODE      = os.getenv("PAYPAL_MODE", "sandbox")
 PAYPAL_BASE      = "https://api-m.sandbox.paypal.com" if PAYPAL_MODE == "sandbox" else "https://api-m.paypal.com"
 FRONTEND_URL     = os.getenv("FRONTEND_URL", "http://localhost:3000")
 REFERRAL_BONUS   = int(os.getenv("REFERRAL_BONUS", "3"))   # 邀請雙方各得幾次
+
+# ── SMTP 寄信設定（忘記密碼用）────────────────────────
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASS = os.getenv("SMTP_PASS", "")
 
 # ── 綠界 ECPay 設定 ───────────────────────────────────
 ECPAY_MERCHANT_ID   = os.getenv("ECPAY_MERCHANT_ID", "2000132")       # 測試商店代號
@@ -104,6 +113,12 @@ def db_executescript(conn, script):
         conn.executescript(script)
 
 def init_db():
+    if DATABASE_URL and HAS_PG:
+        print(f"✅ 使用 PostgreSQL: {DATABASE_URL[:40]}...")
+    else:
+        reason = "已設定但 psycopg2 未安裝" if DATABASE_URL else "未設定 DATABASE_URL"
+        print(f"⚠️ 使用 SQLite ({reason})")
+
     with get_db() as db:
         is_pg = bool(DATABASE_URL and HAS_PG)
         serial = "SERIAL" if is_pg else "INTEGER"
@@ -135,6 +150,13 @@ def init_db():
                 paypal_order_id TEXT,
                 status          TEXT    NOT NULL DEFAULT 'pending',
                 created_at      TEXT    NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id         {serial} PRIMARY KEY,
+                user_id    INTEGER NOT NULL,
+                token      TEXT    UNIQUE NOT NULL,
+                expires_at TEXT    NOT NULL,
+                used       INTEGER NOT NULL DEFAULT 0
             );
         """)
         for col_sql in [
@@ -223,6 +245,13 @@ class AnalyzeRequest(BaseModel):
     doc_a: str
     doc_b: str
 
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
 # ── 路由：Auth ────────────────────────────────────────
 @app.post("/auth/register")
 def register(req: RegisterRequest):
@@ -274,6 +303,70 @@ def login(req: LoginRequest):
         if not user:
             raise HTTPException(401, "Email 或密碼錯誤")
     return {"token": make_token(user["id"], req.email), "plan": user["plan"]}
+
+def send_reset_email(email: str, reset_url: str):
+    """發送密碼重設信，若 SMTP 未設定則印到 log"""
+    if not (SMTP_HOST and SMTP_USER and SMTP_PASS):
+        print(f"[Password Reset] SMTP 未設定，reset URL for {email}: {reset_url}")
+        return
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "文件比對工具 - 密碼重設"
+        msg["From"]    = SMTP_USER
+        msg["To"]      = email
+        body = f"""<html><body>
+<p>您好，</p>
+<p>我們收到了您的密碼重設請求。請點擊以下連結重設您的密碼（連結 30 分鐘後失效）：</p>
+<p><a href="{reset_url}">{reset_url}</a></p>
+<p>如果您沒有發出此請求，請忽略此郵件。</p>
+<p>— 文件比對工具團隊</p>
+</body></html>"""
+        msg.attach(MIMEText(body, "html", "utf-8"))
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(SMTP_USER, email, msg.as_string())
+    except Exception as e:
+        print(f"[Password Reset] 寄信失敗: {e}，reset URL: {reset_url}")
+
+@app.post("/auth/forgot-password")
+def forgot_password(req: ForgotPasswordRequest):
+    with get_db() as db:
+        user = db_execute(db, "SELECT id FROM users WHERE email=?", (req.email,)).fetchone()
+        if user:
+            reset_token = secrets.token_urlsafe(32)
+            expires_at  = (datetime.now() + timedelta(minutes=30)).isoformat()
+            # 清除同帳號舊 token
+            try:
+                db_execute(db, "DELETE FROM password_reset_tokens WHERE user_id=?", (user["id"],))
+            except Exception:
+                pass
+            db_execute(db,
+                "INSERT INTO password_reset_tokens (user_id, token, expires_at, used) VALUES (?,?,?,0)",
+                (user["id"], reset_token, expires_at)
+            )
+            reset_url = f"{FRONTEND_URL}?reset_token={reset_token}"
+            send_reset_email(req.email, reset_url)
+    # 無論 email 存不存在，都回傳同樣訊息（避免洩露帳號是否存在）
+    return {"message": "如果此 Email 已註冊，您將收到重設密碼的郵件"}
+
+@app.post("/auth/reset-password")
+def reset_password(req: ResetPasswordRequest):
+    if len(req.new_password) < 6:
+        raise HTTPException(400, "密碼至少 6 個字元")
+    with get_db() as db:
+        row = db_execute(db,
+            "SELECT * FROM password_reset_tokens WHERE token=? AND used=0",
+            (req.token,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(400, "重設連結無效或已使用")
+        if datetime.fromisoformat(row["expires_at"]) < datetime.now():
+            raise HTTPException(400, "重設連結已過期，請重新申請")
+        db_execute(db, "UPDATE users SET password=? WHERE id=?",
+                   (hash_password(req.new_password), row["user_id"]))
+        db_execute(db, "UPDATE password_reset_tokens SET used=1 WHERE token=?", (req.token,))
+    return {"message": "密碼重設成功，請重新登入"}
 
 @app.get("/auth/me")
 def me(current_user: dict = Depends(verify_token)):
@@ -513,11 +606,7 @@ def ecpay_check_mac(params: dict) -> str:
     parts.append(f"HashIV={ECPAY_HASH_IV}")
     raw = "&".join(parts)
     encoded = urllib.parse.quote_plus(raw).lower()
-    result = hashlib.sha256(encoded.encode("utf-8")).hexdigest().upper()
-    print(f"[ECPay MAC] raw={raw}")
-    print(f"[ECPay MAC] encoded={encoded}")
-    print(f"[ECPay MAC] result={result}")
-    return result
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest().upper()
 
 def ecpay_verify_mac(params: dict) -> bool:
     """驗證綠界回傳的 CheckMacValue"""
@@ -575,14 +664,8 @@ async def ecpay_notify_credits(request: Request):
     form = await request.form()
     data = dict(form)
 
-    # ── DEBUG：印出所有收到的參數與驗算結果 ──────────────
-    print(f"[ECPay notify] 收到 params: {data}")
-    mac_ok = ecpay_verify_mac(data)
-    print(f"[ECPay notify] CheckMacValue 驗證結果: {mac_ok}")
-    # ─────────────────────────────────────────────────────
-    # 暫時繞過驗證（debug 用），直接先讓流程跑通
-    # if not mac_ok:
-    #     return PlainTextResponse("0|ErrorMessage")
+    if not ecpay_verify_mac(data):
+        return PlainTextResponse("0|ErrorMessage")
 
     trade_no = data.get("MerchantTradeNo", "")
     rtn_code = data.get("RtnCode", "")
@@ -597,11 +680,8 @@ async def ecpay_notify_credits(request: Request):
                 if order:
                     db_execute(db, "UPDATE credit_orders SET status='completed' WHERE paypal_order_id=?", (trade_no,))
                     db_execute(db, "UPDATE users SET credits=credits+? WHERE id=?", (order["credits"], order["user_id"]))
-                    print(f"[ECPay notify] 付款成功，trade_no={trade_no}，credits={order['credits']}")
-                else:
-                    print(f"[ECPay notify] 找不到訂單 trade_no={trade_no}")
         except Exception as e:
-            print(f"[ECPay notify] DB 錯誤: {e}")
+            print(f"[ECPay notify] DB error: {e}")
 
     return PlainTextResponse("1|OK")
 
@@ -668,11 +748,10 @@ async def ecpay_notify_subscription(request: Request):
     data = dict(form)
 
     if not ecpay_verify_mac(data):
-        return "0|ErrorMessage"
+        return PlainTextResponse("0|ErrorMessage")
 
     rtn_code    = data.get("RtnCode", "")
     trade_no    = data.get("MerchantTradeNo", "")
-    period_type = data.get("PeriodType", "")  # 定期定額通知會有此欄
 
     if rtn_code == "1":
         with get_db() as db:
@@ -682,7 +761,7 @@ async def ecpay_notify_subscription(request: Request):
                 (trade_no,)
             )
 
-    return "1|OK"
+    return PlainTextResponse("1|OK")
 
 # ── 路由：分析 ────────────────────────────────────────
 @app.post("/analyze")
