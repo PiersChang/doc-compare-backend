@@ -50,7 +50,7 @@ CREDIT_PACKAGES = [
 ]
 
 # ── 資料庫 ────────────────────────────────────────────
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+DATABASE_URL = os.getenv("DATABASE_URL", "").replace("postgres://", "postgresql://", 1)
 
 try:
     import psycopg2
