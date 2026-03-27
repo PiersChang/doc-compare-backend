@@ -507,7 +507,10 @@ def ecpay_check_mac(params: dict) -> str:
     filtered = {k: v for k, v in params.items() if k != "CheckMacValue"}
     sorted_str = "&".join(f"{k}={v}" for k, v in sorted(filtered.items()))
     raw = f"HashKey={ECPAY_HASH_KEY}&{sorted_str}&HashIV={ECPAY_HASH_IV}"
-    encoded = urllib.parse.quote_plus(raw).lower()
+    # 使用 quote_plus 後，補上 PHP urlencode 相容的字元替換
+    encoded = urllib.parse.quote_plus(raw)
+    encoded = encoded.replace("~", "%7E")  # PHP urlencode 會編碼 ~，Python 預設不會
+    encoded = encoded.lower()
     return hashlib.sha256(encoded.encode()).hexdigest().upper()
 
 def ecpay_verify_mac(params: dict) -> bool:
@@ -544,7 +547,7 @@ async def ecpay_create_order(request: Request, current_user: dict = Depends(veri
         "MerchantTradeDate": datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
         "PaymentType":       "aio",
         "TotalAmount":       amount,
-        "TradeDesc":         urllib.parse.quote("文件比對點數包"),
+        "TradeDesc":         "文件比對點數包",
         "ItemName":          f"文件比對工具 {package['label']} 點數包",
         "ReturnURL":         notify_url,
         "ClientBackURL":     return_url,
@@ -613,7 +616,7 @@ async def ecpay_create_subscription(request: Request, current_user: dict = Depen
         "MerchantTradeDate":   datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
         "PaymentType":         "aio",
         "TotalAmount":         ECPAY_SUB_PRICE,
-        "TradeDesc":           urllib.parse.quote("文件比對無限訂閱"),
+        "TradeDesc":           "文件比對無限訂閱",
         "ItemName":            "文件比對工具 無限版月訂閱",
         "ReturnURL":           notify_url,
         "ClientBackURL":       return_url,
