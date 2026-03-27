@@ -517,7 +517,7 @@ async def ecpay_create_order(request: Request, current_user: dict = Depends(veri
     if not package:
         raise HTTPException(400, "無效的點數包")
 
-    tweak  = secrets.token_hex(4).upper()
+    tweak  = secrets.token_hex(2).upper()
     trade_no = f"DC{datetime.now().strftime('%Y%m%d%H%M%S')}{tweak}"
     amount = ECPAY_CREDIT_PRICES.get(package_id, "96")
 
@@ -596,7 +596,7 @@ async def ecpay_create_subscription(request: Request, current_user: dict = Depen
     綠界定期定額（PeriodCredit）
     注意：正式申請後需開通「定期定額」功能
     """
-    trade_no = f"DS{datetime.now().strftime('%Y%m%d%H%M%S')}{secrets.token_hex(3).upper()}"
+    trade_no = f"DS{datetime.now().strftime('%Y%m%d%H%M%S')}{secrets.token_hex(2).upper()}"
     notify_url = f"{os.getenv('BACKEND_URL', 'https://doc-compare-backend-production.up.railway.app')}/ecpay/notify-subscription"
     return_url = f"{FRONTEND_URL}?ecpay_return=subscription"
 
