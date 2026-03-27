@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, PlainTextResponse
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 import sqlite3, hashlib, jwt, httpx, os, json, secrets, string, hmac, urllib.parse
@@ -504,16 +504,20 @@ async def paypal_webhook(request: Request):
 
 # ── ECPay 工具函式 ────────────────────────────────────
 def ecpay_check_mac(params: dict) -> str:
-    """產生綠界 CheckMacValue"""
-    # 排除 CheckMacValue，依 key 字母排序
+    """產生綠界 CheckMacValue（依官方 Python SDK 演算法）"""
     filtered = {k: v for k, v in params.items() if k != "CheckMacValue"}
-    sorted_str = "&".join(f"{k}={v}" for k, v in sorted(filtered.items()))
-    raw = f"HashKey={ECPAY_HASH_KEY}&{sorted_str}&HashIV={ECPAY_HASH_IV}"
-    # 使用 quote_plus 後，補上 PHP urlencode 相容的字元替換
-    encoded = urllib.parse.quote_plus(raw)
-    encoded = encoded.replace("~", "%7E")  # PHP urlencode 會編碼 ~，Python 預設不會
-    encoded = encoded.lower()
-    return hashlib.sha256(encoded.encode()).hexdigest().upper()
+    keys = sorted(filtered.keys())
+    parts = [f"HashKey={ECPAY_HASH_KEY}"]
+    for k in keys:
+        parts.append(f"{k}={filtered[k]}")
+    parts.append(f"HashIV={ECPAY_HASH_IV}")
+    raw = "&".join(parts)
+    encoded = urllib.parse.quote_plus(raw).lower()
+    result = hashlib.sha256(encoded.encode("utf-8")).hexdigest().upper()
+    print(f"[ECPay MAC] raw={raw}")
+    print(f"[ECPay MAC] encoded={encoded}")
+    print(f"[ECPay MAC] result={result}")
+    return result
 
 def ecpay_verify_mac(params: dict) -> bool:
     """驗證綠界回傳的 CheckMacValue"""
@@ -572,22 +576,29 @@ async def ecpay_notify_credits(request: Request):
     data = dict(form)
 
     if not ecpay_verify_mac(data):
-        return "0|ErrorMessage"  # 驗證失敗
+        print(f"[ECPay notify] CheckMacValue 驗證失敗，收到 params: {data}")
+        return PlainTextResponse("0|ErrorMessage")  # 驗證失敗
 
     trade_no = data.get("MerchantTradeNo", "")
     rtn_code = data.get("RtnCode", "")
 
     if rtn_code == "1":  # 付款成功
-        with get_db() as db:
-            order = db_execute(db,
-                "SELECT * FROM credit_orders WHERE paypal_order_id=? AND status='pending'",
-                (trade_no,)
-            ).fetchone()
-            if order:
-                db_execute(db, "UPDATE credit_orders SET status='completed' WHERE paypal_order_id=?", (trade_no,))
-                db_execute(db, "UPDATE users SET credits=credits+? WHERE id=?", (order["credits"], order["user_id"]))
+        try:
+            with get_db() as db:
+                order = db_execute(db,
+                    "SELECT * FROM credit_orders WHERE paypal_order_id=? AND status='pending'",
+                    (trade_no,)
+                ).fetchone()
+                if order:
+                    db_execute(db, "UPDATE credit_orders SET status='completed' WHERE paypal_order_id=?", (trade_no,))
+                    db_execute(db, "UPDATE users SET credits=credits+? WHERE id=?", (order["credits"], order["user_id"]))
+                    print(f"[ECPay notify] 付款成功，trade_no={trade_no}，credits={order['credits']}")
+                else:
+                    print(f"[ECPay notify] 找不到訂單 trade_no={trade_no}")
+        except Exception as e:
+            print(f"[ECPay notify] DB 錯誤: {e}")
 
-    return "1|OK"
+    return PlainTextResponse("1|OK")
 
 @app.get("/ecpay/order-status")
 async def ecpay_order_status(trade_no: str, current_user: dict = Depends(verify_token)):
