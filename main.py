@@ -278,9 +278,11 @@ def login(req: LoginRequest):
 @app.get("/auth/me")
 def me(current_user: dict = Depends(verify_token)):
     with get_db() as db:
-        user = db_execute(db, 
+        user = db_execute(db,
             "SELECT plan, credits, referral_code FROM users WHERE id=?", (current_user["id"],)
         ).fetchone()
+        if not user:
+            raise HTTPException(404, "使用者不存在")
         usage = get_monthly_usage(db, current_user["id"])
     return {
         "email":         current_user["email"],
