@@ -1,9 +1,10 @@
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from datetime import datetime, timedelta
-import sqlite3, hashlib, jwt, httpx, os, json, secrets, string
+import sqlite3, hashlib, jwt, httpx, os, json, secrets, string, hmac, urllib.parse
 from contextlib import contextmanager
 from dotenv import load_dotenv
 
@@ -24,13 +25,28 @@ PAYPAL_MODE      = os.getenv("PAYPAL_MODE", "sandbox")
 PAYPAL_BASE      = "https://api-m.sandbox.paypal.com" if PAYPAL_MODE == "sandbox" else "https://api-m.paypal.com"
 FRONTEND_URL     = os.getenv("FRONTEND_URL", "http://localhost:3000")
 REFERRAL_BONUS   = int(os.getenv("REFERRAL_BONUS", "3"))   # 邀請雙方各得幾次
+
+# ── 綠界 ECPay 設定 ───────────────────────────────────
+ECPAY_MERCHANT_ID   = os.getenv("ECPAY_MERCHANT_ID", "2000132")       # 測試商店代號
+ECPAY_HASH_KEY      = os.getenv("ECPAY_HASH_KEY", "5294y06JbISpM5x9")  # 測試 HashKey
+ECPAY_HASH_IV       = os.getenv("ECPAY_HASH_IV", "v77hoKGq4kWxNNIS")   # 測試 HashIV
+ECPAY_MODE          = os.getenv("ECPAY_MODE", "test")                  # test 或 production
+ECPAY_BASE          = "https://payment-stage.ecpay.com.tw" if ECPAY_MODE == "test" else "https://payment.ecpay.com.tw"
+
+# 點數包對應台幣價格（1 USD ≈ 32 TWD，可自行調整）
+ECPAY_CREDIT_PRICES = {
+    "pack_20":  "96",    # TWD $96  ≈ USD $3
+    "pack_50":  "192",   # TWD $192 ≈ USD $6
+    "pack_100": "320",   # TWD $320 ≈ USD $10
+}
+ECPAY_SUB_PRICE = "192"  # 訂閱每月 TWD $192 ≈ USD $6
 security         = HTTPBearer()
 
 # 點數包定義
 CREDIT_PACKAGES = [
-    {"id": "pack_20",  "credits": 20,  "price": "3.00",  "label": "20 次",  "popular": False},
-    {"id": "pack_50",  "credits": 50,  "price": "6.00",  "label": "50 次",  "popular": True},
-    {"id": "pack_100", "credits": 100, "price": "10.00", "label": "100 次", "popular": False},
+    {"id": "pack_20",  "credits": 20,  "price": "3.00",  "price_twd": "96",  "label": "20 次",  "popular": False},
+    {"id": "pack_50",  "credits": 50,  "price": "6.00",  "price_twd": "192", "label": "50 次",  "popular": True},
+    {"id": "pack_100", "credits": 100, "price": "10.00", "price_twd": "320", "label": "100 次", "popular": False},
 ]
 
 # ── 資料庫 ────────────────────────────────────────────
@@ -476,6 +492,169 @@ async def paypal_webhook(request: Request):
             with get_db() as db:
                 db_execute(db, "UPDATE users SET plan='free' WHERE paypal_subscription_id=?", (sid,))
     return {"received": True}
+
+# ── ECPay 工具函式 ────────────────────────────────────
+def ecpay_check_mac(params: dict) -> str:
+    """產生綠界 CheckMacValue"""
+    # 排除 CheckMacValue，依 key 字母排序
+    filtered = {k: v for k, v in params.items() if k != "CheckMacValue"}
+    sorted_str = "&".join(f"{k}={v}" for k, v in sorted(filtered.items()))
+    raw = f"HashKey={ECPAY_HASH_KEY}&{sorted_str}&HashIV={ECPAY_HASH_IV}"
+    encoded = urllib.parse.quote_plus(raw).lower()
+    return hashlib.sha256(encoded.encode()).hexdigest().upper()
+
+def ecpay_verify_mac(params: dict) -> bool:
+    """驗證綠界回傳的 CheckMacValue"""
+    expected = ecpay_check_mac(params)
+    return hmac.compare_digest(expected, params.get("CheckMacValue", ""))
+
+# ── 路由：ECPay 點數包 ────────────────────────────────
+@app.post("/ecpay/create-order")
+async def ecpay_create_order(request: Request, current_user: dict = Depends(verify_token)):
+    body       = await request.json()
+    package_id = body.get("package_id")
+    package    = next((p for p in CREDIT_PACKAGES if p["id"] == package_id), None)
+    if not package:
+        raise HTTPException(400, "無效的點數包")
+
+    tweak  = secrets.token_hex(4).upper()
+    trade_no = f"DC{datetime.now().strftime('%Y%m%d%H%M%S')}{tweak}"
+    amount = ECPAY_CREDIT_PRICES.get(package_id, "96")
+
+    # 存訂單到 DB（以 trade_no 作為識別）
+    with get_db() as db:
+        db_execute(db,
+            "INSERT INTO credit_orders (user_id, package_id, credits, amount, paypal_order_id, status, created_at) VALUES (?,?,?,?,?,?,?)",
+            (current_user["id"], package_id, package["credits"], amount, trade_no, "pending", datetime.now().isoformat())
+        )
+
+    return_url = f"{FRONTEND_URL}?ecpay_return=credits"
+    notify_url = f"{os.getenv('BACKEND_URL', 'https://doc-compare-backend-production.up.railway.app')}/ecpay/notify-credits"
+
+    params = {
+        "MerchantID":        ECPAY_MERCHANT_ID,
+        "MerchantTradeNo":   trade_no,
+        "MerchantTradeDate": datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+        "PaymentType":       "aio",
+        "TotalAmount":       amount,
+        "TradeDesc":         urllib.parse.quote("文件比對點數包"),
+        "ItemName":          f"文件比對工具 {package['label']} 點數包",
+        "ReturnURL":         notify_url,
+        "ClientBackURL":     return_url,
+        "ChoosePayment":     "Credit",
+        "EncryptType":       "1",
+    }
+    params["CheckMacValue"] = ecpay_check_mac(params)
+
+    # 回傳 form action 和參數讓前端自動送出
+    return {
+        "action": f"{ECPAY_BASE}/Cashier/AioCheckOut/V5",
+        "params": params,
+        "trade_no": trade_no
+    }
+
+@app.post("/ecpay/notify-credits")
+async def ecpay_notify_credits(request: Request):
+    """綠界付款完成後的 Server 通知（非同步）"""
+    form = await request.form()
+    data = dict(form)
+
+    if not ecpay_verify_mac(data):
+        return "0|ErrorMessage"  # 驗證失敗
+
+    trade_no = data.get("MerchantTradeNo", "")
+    rtn_code = data.get("RtnCode", "")
+
+    if rtn_code == "1":  # 付款成功
+        with get_db() as db:
+            order = db_execute(db,
+                "SELECT * FROM credit_orders WHERE paypal_order_id=? AND status='pending'",
+                (trade_no,)
+            ).fetchone()
+            if order:
+                db_execute(db, "UPDATE credit_orders SET status='completed' WHERE paypal_order_id=?", (trade_no,))
+                db_execute(db, "UPDATE users SET credits=credits+? WHERE id=?", (order["credits"], order["user_id"]))
+
+    return "1|OK"
+
+@app.get("/ecpay/order-status")
+async def ecpay_order_status(trade_no: str, current_user: dict = Depends(verify_token)):
+    """前端輪詢訂單狀態"""
+    with get_db() as db:
+        order = db_execute(db,
+            "SELECT status, credits FROM credit_orders WHERE paypal_order_id=? AND user_id=?",
+            (trade_no, current_user["id"])
+        ).fetchone()
+    if not order:
+        raise HTTPException(404, "訂單不存在")
+    return {"status": order["status"], "credits": order["credits"]}
+
+# ── 路由：ECPay 訂閱（定期定額）────────────────────────
+@app.post("/ecpay/create-subscription")
+async def ecpay_create_subscription(request: Request, current_user: dict = Depends(verify_token)):
+    """
+    綠界定期定額（PeriodCredit）
+    注意：正式申請後需開通「定期定額」功能
+    """
+    trade_no = f"DS{datetime.now().strftime('%Y%m%d%H%M%S')}{secrets.token_hex(3).upper()}"
+    notify_url = f"{os.getenv('BACKEND_URL', 'https://doc-compare-backend-production.up.railway.app')}/ecpay/notify-subscription"
+    return_url = f"{FRONTEND_URL}?ecpay_return=subscription"
+
+    params = {
+        "MerchantID":          ECPAY_MERCHANT_ID,
+        "MerchantTradeNo":     trade_no,
+        "MerchantTradeDate":   datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+        "PaymentType":         "aio",
+        "TotalAmount":         ECPAY_SUB_PRICE,
+        "TradeDesc":           urllib.parse.quote("文件比對無限訂閱"),
+        "ItemName":            "文件比對工具 無限版月訂閱",
+        "ReturnURL":           notify_url,
+        "ClientBackURL":       return_url,
+        "ChoosePayment":       "Credit",
+        "EncryptType":         "1",
+        "PeriodAmount":        ECPAY_SUB_PRICE,
+        "PeriodType":          "M",   # 每月
+        "Frequency":           "1",
+        "ExecTimes":           "12",  # 最多 12 個月，可調整
+        "PeriodReturnURL":     notify_url,
+    }
+    params["CheckMacValue"] = ecpay_check_mac(params)
+
+    # 儲存訂閱記錄
+    with get_db() as db:
+        db_execute(db,
+            "UPDATE users SET paypal_subscription_id=? WHERE id=?",
+            (trade_no, current_user["id"])
+        )
+
+    return {
+        "action": f"{ECPAY_BASE}/Cashier/AioCheckOut/V5",
+        "params": params,
+        "trade_no": trade_no
+    }
+
+@app.post("/ecpay/notify-subscription")
+async def ecpay_notify_subscription(request: Request):
+    """綠界訂閱付款通知"""
+    form = await request.form()
+    data = dict(form)
+
+    if not ecpay_verify_mac(data):
+        return "0|ErrorMessage"
+
+    rtn_code    = data.get("RtnCode", "")
+    trade_no    = data.get("MerchantTradeNo", "")
+    period_type = data.get("PeriodType", "")  # 定期定額通知會有此欄
+
+    if rtn_code == "1":
+        with get_db() as db:
+            # 首次付款或定期扣款成功 → 升級/維持 pro
+            db_execute(db,
+                "UPDATE users SET plan='pro' WHERE paypal_subscription_id=?",
+                (trade_no,)
+            )
+
+    return "1|OK"
 
 # ── 路由：分析 ────────────────────────────────────────
 @app.post("/analyze")
