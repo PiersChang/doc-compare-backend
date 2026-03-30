@@ -159,16 +159,21 @@ def init_db():
                 used       INTEGER NOT NULL DEFAULT 0
             );
         """)
-        for col_sql in [
-            "ALTER TABLE users ADD COLUMN credits INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE users ADD COLUMN referral_code TEXT",
-            "ALTER TABLE users ADD COLUMN referred_by INTEGER",
-            "ALTER TABLE usage_log ADD COLUMN source TEXT NOT NULL DEFAULT 'free'",
+        # PostgreSQL 用 IF NOT EXISTS 避免「欄位已存在」導致 transaction 中斷
+        for table, col, col_def in [
+            ("users",     "credits",       "INTEGER NOT NULL DEFAULT 0"),
+            ("users",     "referral_code", "TEXT"),
+            ("users",     "referred_by",   "INTEGER"),
+            ("usage_log", "source",        "TEXT NOT NULL DEFAULT 'free'"),
         ]:
-            try:
-                db_execute(db, col_sql)
-            except Exception:
-                pass
+            if is_pg:
+                sql = f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_def}"
+                db_execute(db, sql)
+            else:
+                try:
+                    db_execute(db, f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+                except Exception:
+                    pass
 
 init_db()
 
