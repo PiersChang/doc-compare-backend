@@ -114,10 +114,10 @@ def db_executescript(conn, script):
 
 def init_db():
     if DATABASE_URL and HAS_PG:
-        print(f"✅ 使用 PostgreSQL: {DATABASE_URL[:40]}...")
+        print(f"[DB] Using PostgreSQL: {DATABASE_URL[:40]}...", flush=True)
     else:
-        reason = "已設定但 psycopg2 未安裝" if DATABASE_URL else "未設定 DATABASE_URL"
-        print(f"⚠️ 使用 SQLite ({reason})")
+        reason = "psycopg2 not installed" if DATABASE_URL else "DATABASE_URL not set"
+        print(f"[DB] Using SQLite ({reason})", flush=True)
 
     with get_db() as db:
         is_pg = bool(DATABASE_URL and HAS_PG)
